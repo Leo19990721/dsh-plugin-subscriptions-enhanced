@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Subscriptions Enhanced",
-    "description": "Focused enhancement of dsh-plugin-subscriptions 0.9.13. Antigravity stops immediately on quota errors without a guessed five-minute cooldown; transient failures retry at most twice. Gemini omits the fixed Harness identity opener and uses neutral application wording in Creator. All four selected modes keep their existing capabilities; no automatic Minimal switching. Original account management, model settings, quotas, network transport and other subscriptions are retained. Enable this bundle instead of the original subscriptions bundle."
+    "description": "Retains subscription accounts, model settings, quotas and transport. All new and existing conversations keep native DSH mode, model and reasoning selectors. Choosing Gemini in a blank new conversation selects Writing, and Writing automatically pairs with Gemini. Selecting a non-Gemini model in a blank Writing conversation restores the default non-Writing mode and keeps the clicked model. Started conversations keep their mode: Writing accepts only Gemini and other modes accept only non-Gemini selections, using native error feedback. Writing reuses Minimal capabilities with a Chinese writing-assistant opener. Antigravity transient failures retry at most twice and preserve explicit backoff."
   }
 }

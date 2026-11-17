@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 let source = await readFile(new URL('../lib/index.js', import.meta.url), 'utf8');
 source = source.replace('"./policy.js"', JSON.stringify(new URL('../lib/policy.js', import.meta.url).href));
 source = source.replace('"./gemini-prompt.js"', JSON.stringify(new URL('../lib/gemini-prompt.js', import.meta.url).href));
+source = source.replace('"./writing-host.js"', JSON.stringify(new URL('../lib/writing-host.js', import.meta.url).href));
 source += '\nexport { AntigravityAdapter, classifyPoolFailure, PoolHealthRegistry, PoolAdapter, memberKey, LlmError, toAntigravityRequest };\n';
 const module = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 
@@ -74,9 +75,10 @@ test('Gemini identity editing handles system history while Claude and other syst
   assert.equal(module.toAntigravityRequest({ model: 'gemini-4-hydrogen', system: minimal }, messages, 'synthetic-project').request.systemInstruction.parts[0].text, minimal);
 });
 
-test('enhanced Host no longer registers any automatic session preset selection', () => {
+test('enhanced Host composes the public writing controller without editing provider messages', () => {
   assert.equal(source.includes('registerGeminiDefault(ctx)'), false);
-  assert.equal(source.includes('agentPresets.select('), false);
+  assert.equal(source.includes('ctx.plugin(writing)'), true);
+  assert.equal(source.includes('agentPresets.select('), false, 'selection belongs to the separate public-service controller');
 });
 
 test('build does not introduce raw socket transport or a second credential store', () => {

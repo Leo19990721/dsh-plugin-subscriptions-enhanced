@@ -19,7 +19,8 @@ function replaceOnce(source, old, next) {
   if (source.split(old).length !== 2) throw new Error(`Expected one integration seam: ${old.slice(0, 90)}`);
   return source.replace(old, next);
 }
-host = 'import { enhancedRetryPolicy, antigravityPoolFailure } from "./policy.js";\nimport { geminiSystemPrompt } from "./gemini-prompt.js";\n' + host;
+host = 'import { enhancedRetryPolicy, antigravityPoolFailure } from "./policy.js";\nimport { geminiSystemPrompt } from "./gemini-prompt.js";\nimport * as writing from "./writing-host.js";\n' + host;
+host = replaceOnce(host, 'function apply(ctx, config) {', 'function apply(ctx, config) {\n\tctx.plugin(writing);');
 host = replaceOnce(host, 'const name = "dsh-plugin-subscriptions";', 'const name = "dsh-plugin-subscriptions-enhanced";');
 host = replaceOnce(host,
   'return subscriptionRetryPolicy(DEFAULT_RETRY, this.options.rateLimit ?? DEFAULT_RATE_LIMIT_WAIT, `antigravity: provider "${provider}" retryPolicy`);',
@@ -40,7 +41,7 @@ client = client.replace('//# sourceMappingURL=client.js.map', '');
 await mkdir(join(root, 'lib'), { recursive: true });
 await writeFile(join(root, 'lib/index.js'), host);
 await writeFile(join(root, 'lib/client.js'), client);
-for (const name of ['policy.js', 'gemini-prompt.js']) await copyFile(join(root, 'src', name), join(root, 'lib', name));
+for (const name of ['policy.js', 'gemini-prompt.js', 'writing-policy.js', 'writing-host.js']) await copyFile(join(root, 'src', name), join(root, 'lib', name));
 await copyFile(join(upstream, 'LICENSE'), join(root, 'LICENSE'));
-await writeFile(join(root, 'lib/upstream.json'), JSON.stringify({ name: manifest.name, version: manifest.version, hostSha256: expectedHost, clientSha256: expectedClient, patches: ['Antigravity retry policy', 'Antigravity pool cooldown classification', 'Gemini-only neutral system identity; all four user-selected presets retained', 'DSH quota badge positioning compatibility', 'local package identity'] }, null, 2) + '\n');
+await writeFile(join(root, 'lib/upstream.json'), JSON.stringify({ name: manifest.name, version: manifest.version, hostSha256: expectedHost, clientSha256: expectedClient, patches: ['Antigravity retry policy', 'Antigravity pool cooldown classification', 'Host-only Gemini writing model category policy; original native selectors retained', 'DSH quota badge positioning compatibility', 'local package identity'] }, null, 2) + '\n');
 console.log('Built Subscriptions Enhanced from verified dsh-plugin-subscriptions@0.9.13; auth, transport, UI and other providers retained.');

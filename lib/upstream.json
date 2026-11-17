@@ -6,7 +6,7 @@
   "patches": [
     "Antigravity retry policy",
     "Antigravity pool cooldown classification",
-    "Gemini-only neutral system identity; all four user-selected presets retained",
+    "Host-only Gemini writing model category policy; original native selectors retained",
     "DSH quota badge positioning compatibility",
     "local package identity"
   ]

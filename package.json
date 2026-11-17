@@ -1,9 +1,9 @@
 {
   "name": "dsh-plugin-subscriptions-enhanced",
-  "version": "0.1.8",
+  "version": "0.2.3",
   "private": true,
   "type": "module",
-  "description": "Subscriptions Enhanced: focused Antigravity retry improvements and Gemini-only neutral system identity without changing the selected mode.",
+  "description": "Subscriptions Enhanced: native DSH selectors, writing-mode Gemini pairing, model category validation and focused Antigravity retry improvements.",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/Leo19990721/dsh-plugin-subscriptions-enhanced.git" },
   "homepage": "https://github.com/Leo19990721/dsh-plugin-subscriptions-enhanced#readme",
@@ -16,20 +16,20 @@
     "./icon": "./icon.svg",
     "./package.json": "./package.json"
   },
-  "files": ["lib", "cordis.patch.yml", "locale", "icon.svg", "README.md", "LICENSE", "NOTICE"],
+  "files": ["lib", "cordis.patch.yml", "locale", "icon.svg", "README.md", "LICENSE", "LICENSE-DSH", "NOTICE"],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": {
       "platform": "web",
-      "inject": ["@deepseek-ai/dsh-client-ui-renderer", "@deepseek-ai/dsh-client-ui-settings", "@deepseek-ai/dsh-client-ui-model-selection", "@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-api-remotes"]
+      "inject": ["@deepseek-ai/dsh-client-ui-renderer", "@deepseek-ai/dsh-client-ui-settings", "@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-api-remotes", "@deepseek-ai/dsh-client-ui-model-selection"]
     }
   },
   "scripts": {
     "build": "node scripts/build.mjs",
     "test": "node scripts/test.mjs",
-    "test:portable": "node --test tests/policy.test.mjs tests/gemini-prompt.test.mjs tests/client.test.mjs tests/release.test.mjs",
+    "test:portable": "node --test tests/policy.test.mjs tests/gemini-prompt.test.mjs tests/client.test.mjs tests/release.test.mjs tests/writing.test.mjs",
     "release:pack": "pwsh -NoProfile -File scripts/pack.ps1",
-    "check": "node --check src/policy.js && node --check src/gemini-prompt.js && node --check src/badge-compat.js && node --check lib/index.js && node --check lib/client.js"
+    "check": "node --check src/policy.js && node --check src/gemini-prompt.js && node --check src/badge-compat.js && node --check src/writing-policy.js && node --check src/writing-host.js && node --check lib/index.js && node --check lib/client.js"
   },
   "dependencies": { "dsh-plugin-subscriptions": "0.9.13", "undici": "7.30.2" },
   "peerDependencies": {
