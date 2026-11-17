@@ -1,0 +1,7 @@
+# Keep upstream installed as the pinned dependency and rollback implementation.
+# Withdrawing this bundle restores its original row automatically.
+- id: llm-subscriptions
+  disabled: true
+- insert:
+    - id: llm-subscriptions-enhanced
+      name: dsh-plugin-subscriptions-enhanced

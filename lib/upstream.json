@@ -1,0 +1,13 @@
+{
+  "name": "dsh-plugin-subscriptions",
+  "version": "0.9.13",
+  "hostSha256": "b5d71b623f9155d206587ca77fe7b9458427cb881b92dc91b24a958587eea7b4",
+  "clientSha256": "4bc997d564f8ec7ad6434a760df94bb2d32b73889153c9f0fc3524c96a5c961b",
+  "patches": [
+    "Antigravity retry policy",
+    "Antigravity pool cooldown classification",
+    "Gemini-only neutral system identity; all four user-selected presets retained",
+    "DSH quota badge positioning compatibility",
+    "local package identity"
+  ]
+}

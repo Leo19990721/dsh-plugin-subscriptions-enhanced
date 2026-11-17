@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Subscriptions Enhanced",
+    "description": "基于 dsh-plugin-subscriptions 0.9.13 的小型增强。Antigravity 额度错误直接结束，不再推测五分钟冷却；临时网络错误最多短重试两次。仅对 Gemini 删除固定的 Harness 身份句，创造模式中的品牌介绍改为当前应用；保留四种模式原有能力，不再自动切换极简。保留原账户管理、模型设置、额度查询、网络发送和其他订阅。使用时停用原订阅 bundle，启用本增强版。"
+  }
+}
