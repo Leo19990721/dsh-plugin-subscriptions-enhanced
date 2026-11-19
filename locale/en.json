@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Subscriptions Enhanced",
-    "description": "Retains subscription accounts, model settings, quotas and transport. All new and existing conversations keep native DSH mode, model and reasoning selectors. Choosing Gemini in a blank new conversation selects Writing, and Writing automatically pairs with Gemini. Selecting a non-Gemini model in a blank Writing conversation restores the default non-Writing mode and keeps the clicked model. Started conversations keep their mode: Writing accepts only Gemini and other modes accept only non-Gemini selections, using native error feedback. Writing reuses Minimal capabilities with a Chinese writing-assistant opener. Antigravity transient failures retry at most twice and preserve explicit backoff."
+    "description": "Manage Codex (ChatGPT), Gemini and other subscriptions in Settings → Models, retaining the original accounts, usage and model transport. All new and existing conversations keep native DSH mode, model and reasoning selectors. Choosing Gemini in a blank new conversation selects Writing, and Writing automatically pairs with Gemini. Selecting a non-Gemini model in a blank Writing conversation restores the default non-Writing mode and keeps the clicked model. Started conversations keep their mode: Writing accepts only Gemini and other modes accept only non-Gemini selections, using native error feedback. Writing reuses Minimal capabilities with a Chinese writing-assistant opener. Antigravity transient failures retry at most twice and preserve explicit backoff."
   }
 }

@@ -6,9 +6,15 @@ const root = new URL('../', import.meta.url);
 test('public release keeps the existing subscription identity and uses its own repository metadata', async () => {
   const pkg = JSON.parse(await readFile(new URL('package.json', root), 'utf8'));
   assert.equal(pkg.name, 'dsh-plugin-subscriptions-enhanced');
-  assert.equal(pkg.engines.dsh, '0.2.2-rc.3');
+  assert.equal(pkg.engines.dsh, '>=0.2.2-rc.3 <0.3.0-0');
+  for (const [id, range] of Object.entries(pkg.peerDependencies)) {
+    if (id.startsWith('@deepseek-ai/dsh-')) assert.equal(range, pkg.engines.dsh, id);
+  }
   assert.match(pkg.repository.url, /github\.com\/Leo19990721\/dsh-plugin-subscriptions-enhanced/);
   assert.ok(pkg.files.includes('NOTICE'));
+  assert.deepEqual(pkg.dependencies, { undici: '7.30.2' });
+  assert.equal(pkg.devDependencies['dsh-plugin-subscriptions'], '0.9.13');
+  assert.deepEqual(Object.keys(pkg.exports), ['.', './client', './locale/*.json', './icon', './package.json']);
   for (const file of ['README.md', 'scripts/pack.ps1', 'tests/gemini-prompt.test.mjs']) assert.doesNotMatch(await readFile(new URL(file, root), 'utf8'), /[CE]:[\\/](?:Users|Personal|AI)/);
 });
 
@@ -23,17 +29,27 @@ test('release preserves the upstream copyright and explains its fixed-version pa
 test('packed subscription release has no private host data or local source map paths', { skip: !process.env.RELEASE_TGZ && 'run against the packed release with RELEASE_TGZ' }, async () => {
   const { gunzipSync } = await import('node:zlib');
   const tar = gunzipSync(await readFile(process.env.RELEASE_TGZ));
-  const names = [];
+  const files = new Map();
   for (let at = 0; at + 512 <= tar.length;) {
     const name = tar.subarray(at, at + 100).toString().replace(/\0.*$/s, '');
     if (!name) break;
     const size = parseInt(tar.subarray(at + 124, at + 136).toString().replace(/\0.*$/s, '').trim(), 8) || 0;
-    const body = tar.subarray(at + 512, at + 512 + size).toString();
-    names.push(name);
+    const body = tar.subarray(at + 512, at + 512 + size);
+    assert.equal(files.has(name), false, `duplicate archive entry: ${name}`);
+    files.set(name, body);
     assert.doesNotMatch(name, /(?:node_modules|\.git|accounts|credentials|sessions|\.env)(?:\/|$)/);
-    assert.doesNotMatch(body, /[CE]:[\\/](?:Users|Personal|AI)|01a1d0eb-00b2/);
+    assert.doesNotMatch(body.toString(), /[CE]:[\\/](?:Users|Personal|AI)|01a1d0eb-00b2/);
     at += 512 + Math.ceil(size / 512) * 512;
   }
-  assert.ok(names.includes('package/NOTICE'));
-  assert.ok(names.includes('package/LICENSE'));
+  const runtime = ['client.js', 'gemini-prompt.js', 'index.js', 'policy.js', 'upstream.json', 'writing-host.js', 'writing-policy.js'];
+  const expected = [...runtime.map(file => `lib/${file}`), 'package.json', 'NOTICE', 'LICENSE', 'LICENSE-DSH',
+    'README.md', 'cordis.patch.yml', 'icon.svg', 'locale/en.json', 'locale/zh.json'];
+  assert.deepEqual([...files.keys()].sort(), expected.map(file => `package/${file}`).sort());
+  for (const file of expected) {
+    const archived = files.get(`package/${file}`);
+    const source = await readFile(new URL(file, root));
+    // pnpm serializes the manifest; compare fields rather than whitespace.
+    if (file === 'package.json') assert.deepEqual(JSON.parse(archived), JSON.parse(source));
+    else assert.ok(archived.equals(source), `packed bytes differ: ${file}`);
+  }
 });

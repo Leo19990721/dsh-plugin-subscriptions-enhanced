@@ -1,9 +1,9 @@
 import { run } from 'node:test';
 import { spec } from 'node:test/reporters';
-const installed = Boolean(process.env.DSH_INSTALL_DIR && process.env.DSH_PROFILE_DIR);
+const installed = !process.argv.includes('--portable') && Boolean(process.env.DSH_INSTALL_DIR && process.env.DSH_PROFILE_DIR);
 if (installed) await import('./runtime-hook.mjs');
 const files = ['tests/policy.test.mjs', 'tests/gemini-prompt.test.mjs', 'tests/client.test.mjs', 'tests/release.test.mjs', 'tests/writing.test.mjs'];
-if (installed) files.push('tests/preset-prompts.test.mjs', 'tests/integration.test.mjs', 'tests/writing-runtime.test.mjs');
+if (installed) files.push('tests/preset-prompts.test.mjs', 'tests/integration.test.mjs', 'tests/writing-runtime.test.mjs', 'tests/subscriptions-upstream.test.mjs');
 else console.log('Installed-runtime integration requires DSH_INSTALL_DIR and DSH_PROFILE_DIR; running portable checks.');
 const stream = run({ files, isolation: 'none' });
 stream.on('test:fail', () => { process.exitCode = 1; });

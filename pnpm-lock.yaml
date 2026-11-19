@@ -8,12 +8,13 @@ importers:
 
   .:
     dependencies:
-      dsh-plugin-subscriptions:
-        specifier: 0.9.13
-        version: 0.9.13
       undici:
         specifier: 7.30.2
         version: 7.30.2
+    devDependencies:
+      dsh-plugin-subscriptions:
+        specifier: 0.9.13
+        version: 0.9.13
 
 packages:
 

@@ -4,9 +4,11 @@ Upstream: https://github.com/V1ki/dsh-plugin-subscriptions
 Copyright (c) 2026 V1ki. The original MIT license is retained in LICENSE.
 
 The build checks the exact upstream Host and Client SHA-256 before applying
-focused Antigravity retry/cooldown, Gemini system identity, quota UI compatibility
-and package identity changes. Account storage, sign-in, token refresh, transport
-and the other provider implementations remain upstream-owned code.
+focused Antigravity retry/cooldown, Gemini system identity, quota UI compatibility,
+Models settings integration, and package identity changes. Account storage, sign-in, token refresh, transport
+and the other provider implementations retain the upstream implementation.
+The upstream subscription package is a build input; the shipped Host and Client
+contain the implementation and do not load that package at runtime.
 Upstream upgrades require a reviewed rebuild; this enhancement does not claim
 that arbitrary future upstream versions are compatible or automatically merged.
 
@@ -16,7 +18,8 @@ contract, with installed-runtime regression coverage, and leaves all native
 Client selectors and transport permissions unchanged. Its writing composition is
 copied from the DSH 0.2.2-rc.3 Minimal preset, replacing only its persona opener
 with the user-approved Chinese writing identity. The MIT license of DSH
-is retained in LICENSE-DSH. No account data is included.
+is retained in LICENSE-DSH. The Models extension uses provider-row styles
+adapted from the same DSH release. No account data is included.
 
 This project is not endorsed by the upstream authors or model service providers.
 Source license permissions do not replace the service providers' account terms.

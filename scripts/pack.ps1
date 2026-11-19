@@ -2,7 +2,9 @@
 param([string]$NodePath, [string]$PnpmPath)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$manifest = Get-Content -LiteralPath (Join-Path $root 'package.json') -Raw | ConvertFrom-Json
+$manifest = [System.IO.File]::ReadAllText((Join-Path $root 'package.json')) | ConvertFrom-Json
+$tarball = Join-Path $root ".local-install/dsh-plugin-subscriptions-enhanced-$($manifest.version).tgz"
+if ((Test-Path -LiteralPath $tarball) -or (Test-Path -LiteralPath ($tarball + '.sha256'))) { throw "Refusing to overwrite an existing archive or checksum: $tarball" }
 $node = if ($NodePath) { $NodePath } else { (Get-Command node -ErrorAction Stop).Source }
 function Invoke-Node([string[]]$NodeArgs, [hashtable]$ExtraEnv = @{}, [string]$Executable = $node) {
   $start = [System.Diagnostics.ProcessStartInfo]::new($Executable)
@@ -22,8 +24,7 @@ function Invoke-Node([string[]]$NodeArgs, [hashtable]$ExtraEnv = @{}, [string]$E
 Invoke-Node -NodeArgs @('scripts/build.mjs')
 $testNode = if ($env:DSH_INSTALL_DIR -and $env:DSH_PROFILE_DIR -and $env:DSH_NODE_EXECUTABLE) { $env:DSH_NODE_EXECUTABLE } else { $node }
 Invoke-Node -NodeArgs @('scripts/test.mjs') -Executable $testNode
-foreach ($file in @('src/policy.js','src/gemini-prompt.js','src/badge-compat.js','src/writing-host.js','src/writing-policy.js','lib/index.js','lib/client.js')) { Invoke-Node -NodeArgs @('--check', $file) }
-$tarball = Join-Path $root ".local-install/dsh-plugin-subscriptions-enhanced-$($manifest.version).tgz"
+foreach ($file in @('src/policy.js','src/gemini-prompt.js','src/badge-compat.js','src/models-settings-ui.js','scripts/models-settings-patch.mjs','src/writing-host.js','src/writing-policy.js','lib/index.js','lib/client.js')) { Invoke-Node -NodeArgs @('--check', $file) }
 if ($PnpmPath) { Invoke-Node -NodeArgs @($PnpmPath, 'pack', '--out', $tarball) }
 else { Push-Location $root; try { & pnpm pack --out $tarball; if ($LASTEXITCODE -ne 0) { throw 'pnpm pack failed' } } finally { Pop-Location } }
 Invoke-Node -NodeArgs @('--test', 'tests/release.test.mjs') -ExtraEnv @{ RELEASE_TGZ = $tarball }
