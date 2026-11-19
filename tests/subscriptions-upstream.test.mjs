@@ -8,19 +8,20 @@ import { Context, Service } from '@deepseek-ai/cordis';
 import { composeEntries, evaluatePluginCompatibility, getDshRuntimeVersion, loadOverlayPatches } from '@deepseek-ai/dsh-app-boot';
 import LlmRuntime from '@deepseek-ai/dsh-llm';
 
-test('DSH accepts this release across the intended 0.2.x range without a version exemption', async () => {
+test('DSH compatibility checks enforce a minimum version, with no upper bound or exemption', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(evaluatePluginCompatibility(manifest), undefined, `runs on DSH ${getDshRuntimeVersion()}`);
   const { engines: _engines, ...withPeerRequirements } = manifest;
-  for (const version of ['0.2.2-rc.3', '0.2.2-rc.5', '0.2.2', '0.2.3-rc.1']) {
+  for (const version of ['0.2.2-rc.3', '0.2.2-rc.5', '0.2.2', '0.2.3-rc.1', '0.3.0-0', '0.3.0-rc.1', '0.3.0', '2.0.0']) {
     assert.equal(evaluatePluginCompatibility(manifest, {}, version), undefined, version);
     assert.equal(evaluatePluginCompatibility(withPeerRequirements, {}, version), undefined, version);
   }
-  for (const version of ['0.2.2-rc.2', '0.3.0-rc.1', '0.3.0']) {
-    const rejection = evaluatePluginCompatibility(manifest, {}, version);
-    assert.equal(rejection?.requirements['engines.dsh'], manifest.engines.dsh, version);
-    assert.equal(rejection.exempted, false);
-  }
+  const minimum = '0.2.2-rc.2';
+  const rejection = evaluatePluginCompatibility(manifest, {}, minimum);
+  assert.equal(rejection?.requirements['engines.dsh'], manifest.engines.dsh, minimum);
+  assert.equal(rejection.exempted, false);
+  assert.deepEqual(evaluatePluginCompatibility(withPeerRequirements, {}, minimum)?.requirements,
+    Object.fromEntries(Object.entries(manifest.peerDependencies).filter(([id]) => id.startsWith('@deepseek-ai/dsh-'))));
 });
 
 test('installed Models settings exposes the subscription footer after its add-provider control', async () => {

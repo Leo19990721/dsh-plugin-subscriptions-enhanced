@@ -10,7 +10,7 @@
 
 ## 安装已发布版本
 
-支持 **DSH 0.2.2-rc.3 起的 0.2.x 版本**（`>=0.2.2-rc.3 <0.3.0-0`），已在 `rc.3` 和 `rc.5` 上通过本机回归。安装包名保持 `dsh-plugin-subscriptions-enhanced`。
+要求 **DSH `0.2.2-rc.3` 或更新版本**，安装不设 DSH 版本上限。已在 `0.2.2-rc.3` 和 `0.2.2-rc.5` 上通过本机回归。安装包名保持 `dsh-plugin-subscriptions-enhanced`。
 
 从本仓库 [Releases](https://github.com/Leo19990721/dsh-plugin-subscriptions-enhanced/releases) 下载经过发布的 `.tgz`，在 DSH 原生插件管理器填写安装包绝对路径或下载 URL。升级继续使用本机原有订阅登录，不迁移或分发账户数据。新建会话和已有会话均使用原生界面，模式、模型、思考强度选择框保持原样。
 

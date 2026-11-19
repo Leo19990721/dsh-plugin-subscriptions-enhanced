@@ -6,7 +6,7 @@ const root = new URL('../', import.meta.url);
 test('public release keeps the existing subscription identity and uses its own repository metadata', async () => {
   const pkg = JSON.parse(await readFile(new URL('package.json', root), 'utf8'));
   assert.equal(pkg.name, 'dsh-plugin-subscriptions-enhanced');
-  assert.equal(pkg.engines.dsh, '>=0.2.2-rc.3 <0.3.0-0');
+  assert.equal(pkg.engines.dsh, '>=0.2.2-rc.3');
   for (const [id, range] of Object.entries(pkg.peerDependencies)) {
     if (id.startsWith('@deepseek-ai/dsh-')) assert.equal(range, pkg.engines.dsh, id);
   }

@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-subscriptions-enhanced",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "private": true,
   "type": "module",
   "description": "Manage Codex and Gemini subscriptions in native DSH Model Settings while retaining Gemini writing mode.",
@@ -8,7 +8,7 @@
   "repository": { "type": "git", "url": "git+https://github.com/Leo19990721/dsh-plugin-subscriptions-enhanced.git" },
   "homepage": "https://github.com/Leo19990721/dsh-plugin-subscriptions-enhanced#readme",
   "bugs": { "url": "https://github.com/Leo19990721/dsh-plugin-subscriptions-enhanced/issues" },
-  "engines": { "dsh": ">=0.2.2-rc.3 <0.3.0-0", "node": ">=24.0.0" },
+  "engines": { "dsh": ">=0.2.2-rc.3", "node": ">=24.0.0" },
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
@@ -36,11 +36,11 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.5 <4.2.0",
     "@deepseek-ai/schemastery": ">=3.18.5 <4",
-    "@deepseek-ai/dsh-llm": ">=0.2.2-rc.3 <0.3.0-0",
-    "@deepseek-ai/dsh-home-paths": ">=0.2.2-rc.3 <0.3.0-0",
-    "@deepseek-ai/dsh-attachment": ">=0.2.2-rc.3 <0.3.0-0",
-    "@deepseek-ai/dsh-web": ">=0.2.2-rc.3 <0.3.0-0",
-    "@deepseek-ai/dsh-tools": ">=0.2.2-rc.3 <0.3.0-0"
+    "@deepseek-ai/dsh-llm": ">=0.2.2-rc.3",
+    "@deepseek-ai/dsh-home-paths": ">=0.2.2-rc.3",
+    "@deepseek-ai/dsh-attachment": ">=0.2.2-rc.3",
+    "@deepseek-ai/dsh-web": ">=0.2.2-rc.3",
+    "@deepseek-ai/dsh-tools": ">=0.2.2-rc.3"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": { "optional": true },
