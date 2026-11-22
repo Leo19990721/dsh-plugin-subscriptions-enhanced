@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import { mountLocalGoogle } from '../src/agy-local-host.js';
+import { Config } from '../lib/index.js';
+import { apply as applyGoogle } from '../lib/agy-local-plugin.js';
 import * as writing from '../src/writing-host.js';
 import { createTurnHost, ORDINARY_SELECTION } from './fixtures/agy-turn-host.mjs';
 
@@ -14,12 +16,12 @@ const calls = h => h.acpCalls.filter(row => row.method === 'session/prompt');
 const end = (h, id) => h.events(id).findLast(e => e.type === 'turn/end')?.data.reason;
 
 async function fixture(t, options) {
-  const { bindings = new Map(), opened = [], catalogProbe, workspaceFingerprint, ...settings } = options;
+  const { bindings = new Map(), opened = [], catalogProbe, workspaceFingerprint, rawConfig, ...settings } = options;
   let google;
   const h = await createTurnHost(t, { releasedReader: true, withCompaction: true, withRetry: true, desktopRequests: true,
     ...settings, async mountSubscription({ scope, makeSession }) {
       const sessions = new Set();
-      google = mountLocalGoogle(scope, {}, {
+      const runtime = {
         workspaceFingerprint,
         async open(signal, { cwd, officialId, mode, persona, mcpServers, onPermission } = {}) {
           opened.push({ officialId, mode, persona });
@@ -36,7 +38,9 @@ async function fixture(t, options) {
         readBinding: id => bindings.get(id),
         async writeBinding(id, row) { bindings.set(id, row); },
         async dispose() { await Promise.all([...sessions].map(session => session.close())); },
-      });
+      };
+      if (rawConfig !== undefined) applyGoogle(scope, Config(rawConfig).google, () => runtime);
+      else google = mountLocalGoogle(scope, {}, runtime);
     },
   });
   const fiber = h.ctx.plugin(writing, { localGoogle: true });
@@ -44,6 +48,42 @@ async function fixture(t, options) {
   assert.equal(fiber.state, 2);
   t.after(() => fiber.dispose());
   return Object.assign(h, { google });
+}
+
+test('built Google schema preserves the non-MCP defaults', () => {
+  const { executable, proxy, dataDir, agentsFile, mcp, gptBridge } = Config({}).google;
+  assert.deepEqual({ executable, proxy, dataDir, agentsFile, mcp, gptBridge }, {
+    executable: undefined, proxy: 'auto', dataDir: undefined, agentsFile: undefined, mcp: ['*'], gptBridge: true,
+  });
+  assert.equal(Config({ google: { agentsFile: '', proxy: '', gptBridge: false } }).google.agentsFile, '');
+  assert.equal(Config({ google: { agentsFile: '', proxy: '', gptBridge: false } }).google.proxy, '');
+  assert.equal(Config({ google: { gptBridge: false } }).google.gptBridge, false);
+});
+
+for (const [label, rawConfig, expected] of [
+  ['omitted', {}, ['mcp__custom-server__fixture', 'mcp__knowledge__dsh_integration_marker', 'remote_list_hosts', 'remote_workspaces']],
+  ['empty', { google: { mcp: [] } }, []],
+  ['allowlist', { google: { mcp: ['remote', 'playwright'] } }, ['remote_list_hosts', 'remote_workspaces']],
+]) {
+  test(`built Config and Google plugin expose the correct MCP tools when ${label}`, { timeout: 10_000 }, async t => {
+    const prompted = Promise.withResolvers();
+    const h = await fixture(t, { rawConfig, localMcpMarker: 'synthetic MCP', acpPrompt: prompted.resolve });
+    const id = await h.create();
+    ok(await h.select(id, selection));
+    ok(await h.prompt(id, 'check advertised tools'));
+    const turn = await Promise.race([prompted.promise, h.idle(id).then(() => assert.fail(JSON.stringify(end(h, id))))]);
+    try {
+      const server = h.acpCalls.findLast(row => row.method === 'session/new').params.mcpServers[0];
+      assert.ok(server, 'independent GPT bridge remains enabled');
+      const response = await fetch(server.url, { method: 'POST', signal: t.signal,
+        headers: { authorization: server.headers[0].value }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) });
+      assert.equal(response.status, 200);
+      const names = (await response.json()).result.tools.map(tool => tool.name);
+      assert.ok(names.includes('dsh_delegate_gpt'));
+      assert.deepEqual(names.filter(name => /^(?:mcp__|remote_)/.test(name)).sort(), expected);
+    } finally { turn.update('checked'); turn.reply(); }
+    await h.idle(id);
+  });
 }
 
 test('catalog retries transient failures after cooldown and broadcasts recovery', async t => {
