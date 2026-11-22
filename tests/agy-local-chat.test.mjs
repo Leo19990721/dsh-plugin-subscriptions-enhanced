@@ -14,15 +14,17 @@ const calls = h => h.acpCalls.filter(row => row.method === 'session/prompt');
 const end = (h, id) => h.events(id).findLast(e => e.type === 'turn/end')?.data.reason;
 
 async function fixture(t, options) {
-  const { bindings = new Map(), opened = [], ...settings } = options;
+  const { bindings = new Map(), opened = [], catalogProbe, ...settings } = options;
+  let google;
   const h = await createTurnHost(t, { releasedReader: true, withCompaction: true, withRetry: true, desktopRequests: true,
     ...settings, async mountSubscription({ scope, makeSession }) {
       const sessions = new Set();
-      mountLocalGoogle(scope, {}, {
-        async open(signal, { cwd, officialId, mode, persona, mcpServers } = {}) {
+      google = mountLocalGoogle(scope, {}, {
+        async open(signal, { cwd, officialId, mode, persona, mcpServers, onPermission } = {}) {
           opened.push({ officialId, mode, persona });
+          if (!mode) await catalogProbe?.();
           if (mode && !settings.localPermissions) assert.equal(mode, 'read-only');
-          const session = makeSession({ signal, cwd, mcpServers });
+          const session = makeSession({ signal, cwd, mcpServers, onPermission });
           try { await session.open(officialId); }
           catch (error) { await session.close(); throw error; }
           sessions.add(session);
@@ -40,7 +42,135 @@ async function fixture(t, options) {
   await fiber.await();
   assert.equal(fiber.state, 2);
   t.after(() => fiber.dispose());
-  return h;
+  return Object.assign(h, { google });
+}
+
+test('catalog retries transient failures after cooldown and broadcasts recovery', async t => {
+  let probes = 0;
+  const h = await fixture(t, { catalogProbe() { if (++probes === 1) throw new Error('network down'); } });
+  const clock = t.mock.method(Date, 'now', () => 1000);
+  const updates = [];
+  h.ctx.on('llm/models-updated', provider => updates.push(provider), { global: true });
+  assert.deepEqual(await h.google.inspect(), { status: 'unavailable', modelCount: 0 });
+  assert.deepEqual(await h.google.inspect(), { status: 'unavailable', modelCount: 0 });
+  assert.equal(probes, 1);
+  clock.mock.mockImplementation(() => 6000);
+  assert.ok((await h.google.inspect()).modelCount > 0);
+  assert.equal(probes, 2);
+  assert.deepEqual(updates, ['antigravity']);
+});
+
+for (const [name, code, status] of [['signed out', 'auth-required', 'signed-out'], ['missing CLI', 'missing-cli', 'missing-cli']]) {
+  test(`catalog does not repeatedly spawn while ${name}`, async t => {
+    const opened = [];
+    const h = await fixture(t, { opened, catalogProbe() { throw Object.assign(new Error('unavailable'), { code }); } });
+    assert.equal((await h.google.inspect()).status, status);
+    assert.equal((await h.google.inspect(false, true)).status, status);
+    assert.equal(opened.length, 1);
+    assert.equal((await h.google.inspect(true)).status, status);
+    assert.equal(opened.length, 2);
+  });
+}
+
+test('native send retains last-known model admission and reprobes within the cooldown', async t => {
+  let probes = 0;
+  const h = await fixture(t, { catalogProbe() { if (++probes === 2) throw new Error('network down'); } });
+  const id = await h.create();
+  ok(await h.select(id, selection));
+  assert.equal((await h.google.inspect(true)).status, 'unavailable');
+  ok(await h.prompt(id, 'after reconnect'));
+  await h.idle(id);
+  assert.equal(probes, 3);
+  assert.equal(calls(h).length, 1);
+});
+
+for (const [mode, kind, relativePaths, decision, expected] of [
+  ['workspace-write', 'edit', ['note.txt'], 'allowed-once', 'allow'],
+  ['workspace-write', 'edit', ['note.txt'], 'rejected', 'deny'],
+  ['workspace-write', 'edit', ['note.txt', '../outside.txt'], undefined, 'deny'],
+  ['workspace-write', 'execute', [], undefined, 'deny'],
+  ['read-only', 'edit', ['note.txt'], undefined, 'deny'],
+  ['read-only', 'read', ['note.txt'], 'allowed-once', 'allow'],
+  ['danger-full-access', 'execute', [], 'rejected', 'deny'],
+]) {
+  test(`ACP ${mode} ${kind} ${relativePaths.join(', ')} ${decision ?? 'is blocked'}`, { timeout: 10_000 }, async t => {
+    const requests = [], replies = [];
+    let current;
+    const h = await fixture(t, { localPermissions: { mode, approval: 'ask', native: true, request(input) {
+      requests.push(input);
+      return decision ?? 'rejected';
+    } }, apis: { onPermissionReply(id, response) {
+      replies.push({ id, response });
+      current.update('权限已处理'); current.reply();
+    } }, acpPrompt(turn) {
+      current = turn;
+      turn.ask('peer-permission', { toolCallId: 'fixture-tool', kind, title: 'Synthetic permission request',
+        locations: relativePaths.map(path => ({ path })) });
+    } });
+    const id = await h.create();
+    ok(await h.select(id, selection));
+    ok(await h.prompt(id, 'process synthetic approval'));
+    await h.idle(id);
+    const approvals = h.events(id).filter(row => row.type.startsWith('approval/'));
+    assert.deepEqual(replies, [{ id: 'peer-permission', response: { outcome: { outcome: 'selected', optionId: expected } } }], JSON.stringify(approvals.map(row => row.data)));
+    assert.equal(requests.length, decision ? 1 : 0, JSON.stringify(approvals.map(row => row.data)));
+    assert.deepEqual(approvals.map(row => row.type), decision ? ['approval/asked', 'approval/decided'] : []);
+    if (decision) {
+      assert.equal(requests[0].agent, h.agent(id));
+      assert.equal(requests[0].toolName, 'Google Antigravity');
+      assert.equal(approvals.at(-1).data.outcome, decision);
+    }
+  });
+}
+
+test('a silent restricted ACP prompt is cancelled instead of hanging', { timeout: 10_000 }, async t => {
+  const prompt = Promise.withResolvers(), timer = Promise.withResolvers();
+  const originalTimer = globalThis.setTimeout;
+  t.mock.method(globalThis, 'setTimeout', (fn, ms, ...args) => ms === 180_000
+    ? (timer.resolve(fn), originalTimer(() => {}, ms)) : originalTimer(fn, ms, ...args));
+  let held, cancels = 0;
+  const h = await fixture(t, { apis: { onCancel() { cancels++; held.reply('cancelled'); } }, acpPrompt(turn) {
+    held = turn;
+    prompt.resolve();
+  } });
+  const id = await h.create();
+  ok(await h.select(id, selection));
+  ok(await h.prompt(id, 'hold without progress'));
+  await prompt.promise;
+  (await timer.promise)();
+  await h.idle(id);
+  assert.equal(cancels, 1);
+  assert.equal(end(h, id).error.code, 'AGY_NO_PROGRESS');
+});
+
+for (const mode of ['queue', 'steer', 'steer-without-ack']) {
+  test(`DSH ${mode} dispatches the second prompt exactly once`, { timeout: 10_000 }, async t => {
+    const first = Promise.withResolvers();
+    let current, seen = 0, cancels = 0;
+    const h = await fixture(t, { apis: { onCancel() {
+      cancels++;
+      if (mode === 'steer') current.reply('cancelled');
+    } }, acpPrompt(turn) {
+      if (++seen === 1) { current = turn; first.resolve(); }
+      else { turn.update('第二轮回复'); turn.reply(); }
+    } });
+    const id = await h.create();
+    ok(await h.select(id, selection));
+    ok(await h.prompt(id, 'first native prompt'));
+    await first.promise;
+    ok(await h.prompt(id, 'second native prompt', { mode: mode === 'queue' ? 'queue' : 'steer' }));
+    if (mode === 'queue') {
+      assert.equal(calls(h).length, 1);
+      assert.equal(cancels, 0);
+      current.update('第一轮答完'); current.reply();
+    }
+    await h.idle(id);
+    assert.deepEqual(end(h, id), { kind: 'completed' });
+    assert.deepEqual(calls(h).map(({ params }) => params.prompt.at(-1).text), ['first native prompt', 'second native prompt']);
+    assert.equal(cancels, mode === 'queue' ? 0 : 1);
+    assert.equal(h.events(id).filter(row => row.type === 'turn/start').length, mode === 'queue' ? 2 : 1);
+    assert.equal(h.acpCalls.filter(row => row.method === 'session/load').length, mode === 'steer-without-ack' ? 1 : 0);
+  });
 }
 
 test('stock DSH chat switches to Gemini and streams two turns in the same ACP conversation', { timeout: 25_000 }, async t => {

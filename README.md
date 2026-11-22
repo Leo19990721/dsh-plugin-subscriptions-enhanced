@@ -6,16 +6,16 @@
 
 自 `0.3.5` 起，DSH 接口包的 peer 依赖不设版本区间，本机 `agy.exe` 也不再限定版本或文件摘要。请使用从 Google 安装的 Windows x64 CLI；运行时仍检查本机路径和 ACP 协议。在原来的聊天模型菜单或 `/model` 里选 **Google Antigravity → Gemini**，不用换预设或另开会话。仍只走[官方 `agy acp`](https://antigravity.google/docs/ide/extensions/acp/)，没有旧私有直连备用通道。
 
-- **工作目录和工具**：使用当前会话的实际工作目录，包含 DSH 已提交的目录变更。DSH「完全权限／无需审批」时，`agy` 按本机权限读写文件、跑命令、联网；完全权限但要求审批时，ACP 的确认请求交给 DSH。受限模式不会放开终端和 MCP（`agy` 的终端沙箱不等同于 DSH 沙箱）。只读模式不写文件；工作区写入模式下，工作区内的 `agy` 编辑由 DSH 审批。
+- **工作目录和工具**：使用当前会话的实际工作目录，包含 DSH 已提交的目录变更。DSH「完全权限／无需审批」时，`agy` 按本机权限读写文件、跑命令、联网；完全权限但要求审批时，ACP 的确认请求交给 DSH。「工作区内」只审批工作区里的编辑，「只读」拒绝编辑；两种模式都禁用终端、MCP 和 CLI 网页工具。需要这些工具时，选择「完全权限 + 需确认」或「完全权限」。原生「插话」中止当前 ACP 回合并接着发送；「排队」等当前回复结束。
 - **进度和附件**：实时思考片段、工具名、运行状态及可用的短结果都能在原生「思考」折叠项里看；工具只由 `agy` 执行一次。拖入图片会发送图像；普通附件按 DSH 的实际存储路径交给 `agy` 按需读取，粘贴文件路径也可以。去掉旧版 64 KiB 文本门槛，仍受 DSH 附件限制、ACP 单帧 16 MiB 上限及模型上下文限制。
 - **续聊**：官方会话状态和对应关系保存在当前 DSH profile 的 `plugin-data/subscriptions-enhanced/agy` 下（无 profile 时在 DSH home）。重启优先恢复同一个官方会话。如果无法恢复该会话或工作目录变更，就带一段近期已完成的对话正文新开。第一次从其他模型切入 Gemini，或切走聊一段再回来，也会带上更新的正文；不搬历史图片、工具输出、思考或其他模型的系统提示词。
-- **本机规则和 MCP**：默认读 DSH home 下的 `AGENTS.md`，复制给该会话独立的 `agy` HOME 作为 `~/.gemini/GEMINI.md`；工作区规则由 `agy` 原生加载。完全权限下，已在当前 DSH 会话注册且可用的 Knowledge、Windows、Playwright 和 Remote 工具（`remote_*`，含 `remote_workspaces`）会通过本机 MCP 转接，沿用其原有会话范围和工具权限。不另起浏览器、不复制 MCP 凭据；DSH 里没启用或没连上的服务不会凭空出现。
+- **本机规则和 MCP**：默认读 DSH home 下的 `AGENTS.md`，复制给该会话独立的 `agy` HOME 作为 `~/.gemini/GEMINI.md`；工作区规则由 `agy` 原生加载；每次启动隔离的聊天会话时，将 DSH 用户技能复制到 `~/.gemini/antigravity-cli/skills/`，不建链接，更新和删除随下次启动同步。完全权限下，已在当前 DSH 会话注册且可用的 Knowledge、Windows、Playwright 和 Remote 工具（`remote_*`，含 `remote_workspaces`）会通过本机 MCP 转接，沿用其原有会话范围和工具权限。不另起浏览器、不复制 MCP 凭据；DSH 里没启用或没连上的服务不会凭空出现。
 
 插件默认从 `%LOCALAPPDATA%\agy\bin\agy.exe` 找 CLI；用[官方 CLI](https://antigravity.google/docs/getting-started?tab=cli)登录，不需要 Google API Key。登录之后回到 **设置 → 模型 → Google Antigravity 接入状态**，点「重新检查」。Gemini 新消息从本机 DSH 聊天框提交，不开放远程或无人值守调用。
 
 已连接并选用 Google Antigravity 时，点击**聊天输入框下方的订阅用量胶囊**，即可查看各模型组的剩余百分比、本地重置时间和 G1 Credits 余额。首次打开才查询，再打开直接显示缓存，需更新时点「刷新」。**设置 → 模型 → Google Antigravity → 管理**也会显示同一份结果。查询只在用户操作时通过官方 `agy --print` 执行，不弹终端、不后台轮询。
 
-可以在插件的 `google` 配置里覆盖 `executable`、`dataDir` 和 `agentsFile`（为空则不加载全局规则）。`proxy` 默认 `auto`：先看代理环境变量，再走 Windows 当前用户的系统代理；可填明确的代理地址，填 `direct` 或空字符串则直连。`mcp` 默认包含 `knowledge`、`windows`、`playwright`、`remote`，可按需缩减；`[]` 则不转接。GPT 自动回传验收轮仍不挂载这些工具。
+可以在插件的 `google` 配置里覆盖 `executable`、`dataDir` 和 `agentsFile`（为空则不加载全局规则）。`proxy` 默认 `auto`：先用已启用的订阅代理，再看代理环境变量，最后走 Windows 当前用户的系统代理；可填明确的代理地址，填 `direct` 或空字符串则直连。`mcp` 默认包含 `knowledge`、`windows`、`playwright`、`remote`，可按需缩减；`[]` 则不转接。GPT 自动回传验收轮仍不挂载这些工具。
 
 用 DSH 插件管理器添加本机 `.tgz`。同名包可以直接更新；如果还装着旧包名 `dsh-plugin-subscriptions-enhanced`，先把新包安装为未启用，卸载旧名的第三方「订阅增强」，再启用新包。旧名和新名不能同时启用。
 

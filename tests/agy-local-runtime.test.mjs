@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { once } from 'node:events';
+import test from 'node:test';
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { agyProxyEnv } from '../src/agy-local-proxy.js';
@@ -37,10 +39,12 @@ test('validates an ordinary local agy.exe without pinning its contents', {
   await assert.rejects(verifiedAgyExecutable(join(linked, 'agy.exe')), { code: 'unsupported-cli' });
 });
 
-test('proxy auto-detects using environment then OS; direct and explicit trump both', async () => {
+test('proxy auto-detects using environment then OS; direct and explicit trump both', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-agy-proxy-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
   let reads = 0;
   const discover = () => { reads++; return '127.0.0.1:43217'; };
-  const parent = { Https_Proxy: 'unused-in-posix', HTTPS_PROXY: 'http://fixture:3000', HTTP_PROXY: 'http://fixture:3001', NO_PROXY: '.fixture.com' };
+  const parent = { DSH_HOME: root, Https_Proxy: 'unused-in-posix', HTTPS_PROXY: 'http://fixture:3000', HTTP_PROXY: 'http://fixture:3001', NO_PROXY: '.fixture.com' };
   assert.deepEqual(await agyProxyEnv('auto', parent, discover), {
     HTTPS_PROXY: 'http://fixture:3000', HTTP_PROXY: 'http://fixture:3001', NO_PROXY: 'localhost,127.0.0.1,::1,.fixture.com',
   });
@@ -48,9 +52,36 @@ test('proxy auto-detects using environment then OS; direct and explicit trump bo
   assert.deepEqual(await agyProxyEnv('', parent, discover), {});
   assert.equal((await agyProxyEnv('http://fixture:34567', parent, discover)).HTTPS_PROXY, 'http://fixture:34567');
   assert.equal(reads, 0);
-  assert.equal((await agyProxyEnv(undefined, {}, discover)).HTTPS_PROXY, 'http://127.0.0.1:43217');
+  assert.equal((await agyProxyEnv(undefined, { DSH_HOME: root }, discover)).HTTPS_PROXY, 'http://127.0.0.1:43217');
   assert.equal(reads, 1);
-  await assert.rejects(agyProxyEnv('file:///not-a-proxy', {}, discover), { code: 'invalid-proxy' });
+  await assert.rejects(agyProxyEnv('file:///not-a-proxy', { DSH_HOME: root }, discover), { code: 'invalid-proxy' });
+});
+
+test('automatic Google proxy reads the upstream subscriptions JSON contract and rechecks it on every launch', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-agy-saved-proxy-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dir = join(root, 'plugins', 'subscriptions');
+  await mkdir(dir, { recursive: true });
+  const file = join(dir, 'proxy.json');
+  const parent = { DSH_HOME: root, HTTPS_PROXY: 'http://env.invalid:8000', NO_PROXY: '.env.invalid' };
+  const os = () => '127.0.0.1:8123';
+  const upstream = { enabled: true, url: 'https://fixture.invalid:8443', username: ' spaced user ', password: 'p@ss:word',
+    bypass: [' .proxy-bypass.invalid ', '*.child.invalid', 'https://EXACT.invalid:5555/test', '*', '.proxy-bypass.invalid'] };
+  await writeFile(file, '\uFEFF' + JSON.stringify(upstream));
+  const saved = 'https://spaced%20user:p%40ss%3Aword@fixture.invalid:8443';
+  for (const mode of ['auto', undefined]) assert.deepEqual(await agyProxyEnv(mode, parent, os), {
+    HTTPS_PROXY: saved, HTTP_PROXY: saved, NO_PROXY: 'localhost,127.0.0.1,::1,.proxy-bypass.invalid,*.child.invalid,exact.invalid',
+  });
+  assert.deepEqual(await agyProxyEnv('direct', parent, os), {});
+  assert.equal((await agyProxyEnv('explicit.invalid:9000', parent, os)).HTTPS_PROXY, 'http://explicit.invalid:9000');
+  for (const text of ['not JSON', 'null', JSON.stringify({ ...upstream, enabled: false }),
+    JSON.stringify({ ...upstream, url: 'socks5://unsupported.invalid:1234' })]) {
+    await writeFile(file, text);
+    assert.equal((await agyProxyEnv('auto', parent, os)).HTTPS_PROXY, 'http://env.invalid:8000');
+    assert.equal((await agyProxyEnv('auto', { DSH_HOME: root }, os)).HTTPS_PROXY, 'http://127.0.0.1:8123');
+  }
+  await writeFile(file, JSON.stringify({ enabled: true, url: 'http://updated.invalid:8888', bypass: [] }));
+  assert.equal((await agyProxyEnv('auto', parent, os)).HTTPS_PROXY, 'http://updated.invalid:8888');
 });
 
 test('quota reads both fixed commands concurrently via the verified CLI', async () => {
@@ -92,17 +123,127 @@ test('quota reads both fixed commands concurrently via the verified CLI', async 
   await runtime.dispose();
 });
 
+test('login alone uses host LOCALAPPDATA and retires only both known legacy catalog caches after success', {
+  skip: process.platform !== 'win32' && 'Windows browser cache migration',
+}, async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-agy-auth-paths-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dshHome = join(root, 'dsh-home'), localAppData = join(root, 'user-local');
+  const defaultData = home => join(home, 'plugin-data', 'subscriptions-enhanced', 'agy');
+  const desktopState = defaultData(join(dshHome, 'profiles', 'desktop'));
+  const catalogLocal = state => join(state, 'catalog', 'local');
+  const homes = [catalogLocal(defaultData(dshHome)), catalogLocal(desktopState)];
+  const customState = join(root, 'custom-state');
+  const cacheParts = ['Microsoft', 'Windows', 'Caches'];
+  for (const state of [...homes, localAppData, catalogLocal(customState)]) {
+    await mkdir(join(state, ...cacheParts), { recursive: true });
+    await writeFile(join(state, ...cacheParts, 'fixture.dat'), state);
+    await mkdir(join(state, 'agy', 'keyring'), { recursive: true });
+    await writeFile(join(state, 'agy', 'keyring', 'keep'), 'synthetic');
+  }
+  const edgeCacheParts = ['Edge', 'User Data', 'component_crx_cache'];
+  await mkdir(join(homes[1], 'Microsoft', ...edgeCacheParts), { recursive: true });
+  await writeFile(join(homes[1], 'Microsoft', ...edgeCacheParts, 'fixture.dat'), 'edge cache');
+  const parentEnv = { DSH_HOME: dshHome, SystemRoot: 'C:\\Windows', LocalAppData: localAppData,
+    USERPROFILE: join(root, 'os-home'), APPDATA: join(root, 'os-roaming'), GOOGLE_OAUTH_TOKEN: 'not-forwarded' };
+  const calls = [];
+  let loginError = true, closeError = false;
+  const deps = { parentEnv, verify: file => {
+    assert.equal(file, join(localAppData, 'agy', 'bin', 'agy.exe'));
+    return file;
+  }, resolveProxy: (_, env) => {
+    assert.equal(env, parentEnv);
+    return { HTTPS_PROXY: 'http://fixture.invalid:9000' };
+  }, makeTransport(options) {
+    calls.push(options);
+    assert.equal(options.env.GOOGLE_OAUTH_TOKEN, undefined);
+    assert.equal(options.env.DSH_HOME, undefined);
+    assert.equal(options.env.HTTPS_PROXY, 'http://fixture.invalid:9000');
+    assert.equal(options.env.HOME, options.env.USERPROFILE);
+    assert.equal(options.env.HOME, join(options.cwd, '..', 'home'));
+    assert.equal(options.env.APPDATA, join(options.cwd, '..', 'roaming'));
+    assert.equal(options.env.TEMP, join(options.cwd, '..', 'scratch'));
+    return {
+      start: async () => ({}), async close() { if (closeError) throw new Error('fixture-reap-failed'); }, async logout() {},
+      async authenticate(id) { assert.equal(id, 'oauth-personal'); if (loginError) throw new Error('fixture-auth-failed'); },
+      async request() { return { sessionId: randomUUID(), configOptions: [{ type: 'select', name: 'Model', id: 'model',
+        category: 'model', currentValue: 'gemini-fixture', options: [{ value: 'gemini-fixture', name: 'Fixture' }] }] }; },
+    };
+  } };
+  const runtime = createLocalAgy({ dataDir: desktopState }, deps);
+  t.after(() => runtime.dispose());
+  await runtime.logout(signal);
+  assert.equal(calls.at(-1).env.LOCALAPPDATA, homes[1]);
+  await assert.rejects(runtime.authenticate(signal), /fixture-auth-failed/u);
+  for (const state of homes) assert.equal(await readFile(join(state, ...cacheParts, 'fixture.dat'), 'utf8'), state);
+  loginError = false;
+  closeError = true;
+  await runtime.authenticate(signal);
+  for (const state of homes) assert.equal(await readFile(join(state, ...cacheParts, 'fixture.dat'), 'utf8'), state);
+  closeError = false;
+  const custom = createLocalAgy({ dataDir: customState }, deps);
+  await custom.authenticate(signal);
+  await custom.dispose();
+  for (const state of homes) assert.equal(await readFile(join(state, ...cacheParts, 'fixture.dat'), 'utf8'), state);
+  // Give one legacy candidate a junction instead of a genuine backup target.
+  await rename(join(homes[0], 'Microsoft'), join(homes[0], 'Microsoft.fixture'));
+  await symlink(join(localAppData, 'Microsoft'), join(homes[0], 'Microsoft'), 'junction');
+  const busy = spawn(process.execPath, ['-e', "console.log('busy'); process.stdin.resume()"], {
+    cwd: join(homes[1], 'Microsoft'), windowsHide: true,
+  });
+  const closed = once(busy, 'close');
+  try {
+    await once(busy.stdout, 'data');
+    await runtime.authenticate(signal);
+    assert.equal(await readFile(join(homes[1], 'Microsoft', ...edgeCacheParts, 'fixture.dat'), 'utf8'), 'edge cache');
+  } finally {
+    busy.stdin.end();
+    await closed;
+  }
+  const unfamiliar = join(homes[1], 'Microsoft', 'unfamiliar.fixture');
+  await writeFile(unfamiliar, 'preserve the whole directory');
+  await runtime.authenticate(signal);
+  assert.equal(await readFile(unfamiliar, 'utf8'), 'preserve the whole directory');
+  assert.equal(await readFile(join(homes[1], 'Microsoft', ...edgeCacheParts, 'fixture.dat'), 'utf8'), 'edge cache');
+  await rm(unfamiliar);
+  await runtime.authenticate(signal);
+  assert.equal(calls.at(-1).env.LOCALAPPDATA, localAppData);
+  assert.equal(calls.at(-1).allowAuthentication, true);
+  assert.equal(calls.at(-1).permissionMode, 'sandbox');
+  assert.equal((await lstat(join(homes[0], 'Microsoft'))).isSymbolicLink(), true);
+  assert.equal((await readdir(homes[0])).some(name => name.startsWith('Microsoft.dsh-retired-')), false);
+  await assert.rejects(lstat(join(homes[1], 'Microsoft')), { code: 'ENOENT' });
+  const [backup] = (await readdir(homes[1])).filter(name => name.startsWith('Microsoft.dsh-retired-'));
+  assert.equal(await readFile(join(homes[1], backup, 'Windows', 'Caches', 'fixture.dat'), 'utf8'), homes[1]);
+  assert.equal(await readFile(join(homes[1], backup, ...edgeCacheParts, 'fixture.dat'), 'utf8'), 'edge cache');
+  await rm(join(homes[0], 'Microsoft'));
+  await rename(join(homes[0], 'Microsoft.fixture'), join(homes[0], 'Microsoft'));
+  await runtime.authenticate(signal);
+  const [historicalBackup] = (await readdir(homes[0])).filter(name => name.startsWith('Microsoft.dsh-retired-'));
+  assert.equal(await readFile(join(homes[0], historicalBackup, 'Windows', 'Caches', 'fixture.dat'), 'utf8'), homes[0]);
+  for (const state of [...homes, localAppData, catalogLocal(customState)]) {
+    assert.equal(await readFile(join(state, 'agy', 'keyring', 'keep'), 'utf8'), 'synthetic');
+  }
+  for (const state of [localAppData, catalogLocal(customState)]) {
+    assert.equal(await readFile(join(state, ...cacheParts, 'fixture.dat'), 'utf8'), state);
+  }
+  await (await runtime.open(signal)).close();
+  assert.equal(calls.at(-1).env.LOCALAPPDATA, homes[1]);
+  assert.equal((await readdir(homes[1])).filter(name => name.startsWith('Microsoft.dsh-retired-')).length, 1);
+});
+
 test('real cwd, stable home and official ID survive CLI upgrade and policy changes', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-agy-test-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const dataDir = join(root, 'runtime'), agentsFile = join(root, 'AGENTS.md');
   await writeFile(agentsFile, '# Synthetic local rules');
+  const parentEnv = { ...process.env, DSH_HOME: join(root, 'dsh-home') };
   const spawns = [], calls = [];
   const officialId = randomUUID();
   const configOptions = [{ type: 'select', name: 'Model', id: 'model', category: 'model', currentValue: 'gemini-fixture',
     options: [{ value: 'gemini-fixture', name: 'Fixture' }] }];
   const dependencies = {
-    verify: () => join(root, 'agy.exe'), resolveProxy: () => ({}),
+    parentEnv, verify: () => join(root, 'agy.exe'), resolveProxy: () => ({}),
     makeTransport(options) {
       spawns.push(options);
       return {
@@ -126,8 +267,8 @@ test('real cwd, stable home and official ID survive CLI upgrade and policy chang
   const settings = () => readFile(join(home, '.gemini', 'antigravity-cli', 'settings.json'), 'utf8').then(JSON.parse);
   assert.equal(spawns[0].cwd, root);
   assert.equal(spawns[0].permissionMode, 'full');
-  assert.equal((await settings()).permissions, undefined);
-  assert.equal((await settings()).allowNonWorkspaceAccess, true);
+  assert.deepEqual(await settings(), { useG1Credits: false, agentMode: '', toolPermission: 'always-proceed',
+    allowNonWorkspaceAccess: true, enableTerminalSandbox: false });
   const rules = () => readFile(join(home, '.gemini', 'GEMINI.md'), 'utf8');
   await runtime.dispose();
   assert.equal(await rules(), '# Synthetic local rules\n\n合成写作人设');
@@ -139,9 +280,73 @@ test('real cwd, stable home and official ID survive CLI upgrade and policy chang
   assert.equal(spawns[1].env.HOME, home);
   assert.equal(spawns[1].permissionMode, 'sandbox');
   assert.equal(await rules(), '# Synthetic local rules', 'ordinary mode removes writing persona while preserving global rules');
-  assert.ok((await settings()).permissions.deny.includes('write_file(*)'));
+  const deny = ['command(*)', 'unsandboxed(*)', 'mcp(*)', 'read_url(*)', 'execute_url(*)'];
+  assert.deepEqual(await settings(), { useG1Credits: false, agentMode: '', toolPermission: 'request-review',
+    allowNonWorkspaceAccess: false, enableTerminalSandbox: true, permissions: { deny: [...deny, 'write_file(*)'] } });
   assert.deepEqual(calls, [{ method: 'session/new', params: { cwd: root, mcpServers: [] } },
     { method: 'session/load', params: { cwd: root, mcpServers: [], sessionId: officialId } }]);
+  await reopened.close();
+  await runtime.open(signal, { id, cwd: root, mode: 'workspace-write', officialId });
+  assert.equal(spawns[2].permissionMode, 'sandbox');
+  assert.deepEqual(await settings(), { useG1Credits: false, agentMode: '', toolPermission: 'request-review',
+    allowNonWorkspaceAccess: false, enableTerminalSandbox: true, permissions: { deny, ask: ['write_file(*)'] } });
+  await runtime.dispose();
+});
+
+test('private CLI homes copy user DSH skills with resources; refresh updates and removals without following links', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-agy-skills-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dshHome = join(root, 'dsh-home'), skills = join(dshHome, 'skills'), source = join(skills, 'bundle');
+  const outside = join(root, 'external');
+  await mkdir(join(source, 'references'), { recursive: true });
+  await mkdir(join(skills, '.system', 'bundled'), { recursive: true });
+  await mkdir(join(skills, 'not-a-skill'), { recursive: true });
+  await mkdir(outside);
+  await symlink(outside, join(skills, 'linked-skill'), 'junction');
+  await symlink(outside, join(source, 'linked-assets'), 'junction');
+  await writeFile(join(source, 'SKILL.md'), 'original');
+  await writeFile(join(source, 'references', 'remove-me.md'), 'reference');
+  await writeFile(join(outside, 'SKILL.md'), 'not ours');
+  await writeFile(join(skills, 'flat.md'), 'flat skill');
+  await writeFile(join(skills, '.system', 'bundled', 'SKILL.md'), 'bundled');
+  const spawns = [];
+  const mkdirDep = { parentEnv: { ...process.env, DSH_HOME: dshHome, SystemRoot: process.env.SystemRoot ?? root },
+    verify: () => join(root, 'agy.exe'), resolveProxy: () => ({}), makeTransport({ env }) {
+      spawns.push(env);
+      return { start: async () => ({}), close: async () => {},
+        async request() { return { sessionId: randomUUID(), configOptions: [{ type: 'select', name: 'Model', id: 'model',
+          category: 'model', currentValue: 'gemini-fixture', options: [{ value: 'gemini-fixture', name: 'Fixture' }] }] }; } };
+    } };
+  const runtime = createLocalAgy({ dataDir: join(root, 'data') }, mkdirDep);
+  const talk = id => runtime.open(signal, { id, cwd: root }).then(session => session.close());
+  const dest = ({ HOME }) => join(HOME, '.gemini', 'antigravity-cli', 'skills');
+  await (await runtime.open(signal)).close();
+  await assert.rejects(lstat(dest(spawns[0])), { code: 'ENOENT' });
+  await talk('first');
+  const first = dest(spawns[1]);
+  assert.equal(await readFile(join(first, 'bundle', 'SKILL.md'), 'utf8'), 'original');
+  assert.equal(await readFile(join(first, 'bundle', 'references', 'remove-me.md'), 'utf8'), 'reference');
+  assert.equal(await readFile(join(first, 'flat', 'SKILL.md'), 'utf8'), 'flat skill');
+  for (const unused of ['.system', 'not-a-skill', 'linked-skill', join('bundle', 'linked-assets')]) {
+    await assert.rejects(lstat(join(first, unused)), { code: 'ENOENT' });
+  }
+  assert.equal((await lstat(join(first, 'bundle'))).isSymbolicLink(), false);
+  await writeFile(join(first, 'bundle', 'SKILL.md'), 'changed private copy');
+  assert.equal(await readFile(join(source, 'SKILL.md'), 'utf8'), 'original');
+  await writeFile(join(source, 'SKILL.md'), 'updated');
+  await rm(join(source, 'references', 'remove-me.md'));
+  await rm(join(skills, 'flat.md'));
+  await talk('first');
+  assert.equal(await readFile(join(first, 'bundle', 'SKILL.md'), 'utf8'), 'updated');
+  await assert.rejects(lstat(join(first, 'bundle', 'references', 'remove-me.md')), { code: 'ENOENT' });
+  await assert.rejects(lstat(join(first, 'flat')), { code: 'ENOENT' });
+  await talk('second');
+  const second = dest(spawns.at(-1));
+  assert.notEqual(second, first);
+  assert.equal(await readFile(join(second, 'bundle', 'SKILL.md'), 'utf8'), 'updated');
+  await rename(skills, join(dshHome, 'skills-removed'));
+  await talk('first');
+  await assert.rejects(lstat(join(first, 'bundle')), { code: 'ENOENT' });
   await runtime.dispose();
 });
 

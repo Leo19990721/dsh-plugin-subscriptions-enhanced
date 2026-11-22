@@ -13,6 +13,8 @@ import { WRITING_PRESET } from './writing-policy.js';
 export const GOOGLE = 'antigravity';
 const NO_RETRY = resolveRetryPolicy({ mode: 'normal', maxRetries: 0 }, 'Google subscription');
 const DSH_CONTEXT_BUDGET = 512_000;
+const CATALOG_RETRY_MS = 5_000;
+const RESTRICTED_SILENCE_MS = 180_000;
 const gemini = value => typeof value === 'string' && /^gemini-[a-z0-9][a-z0-9.-]*$/u.test(value)
   && !value.startsWith('gemini-pro-orchestrator');
 const WRITING_PERSONA = '你是一名中文写作助手，帮助用户起草、修改和整理文字材料。';
@@ -63,6 +65,7 @@ function asLocalError(error) {
     return new LlmError('这条消息和附件超过 ACP 单次传输大小；请分开发送，或把大段正文保存为文件。', 'AGY_PROMPT_TOO_LARGE');
   }
   if (code === 'invalid-proxy') return new LlmError('Google Antigravity 的代理配置无效，请检查 google.proxy。', 'AGY_INVALID_PROXY');
+  if (code === 'skill-sync-failed') return new LlmError('无法将 DSH 技能复制到当前 Gemini 会话，请检查技能目录和文件权限。', 'AGY_SKILL_SYNC_FAILED');
   return new LlmError('Google Antigravity 连接未完成。请检查网络和本机代理；DSH 没有重发。', 'AGY_CONNECTION_FAILED');
 }
 
@@ -72,14 +75,18 @@ function executionPolicy(agent, ctx) {
   const policy = approval?.overrideOf(agent.session) ?? approval?.config?.policy ?? 'ask';
   const mode = sandbox?.mode === 'danger-full-access' ? (policy === 'never' ? 'full' : 'review')
     : sandbox?.mode === 'workspace-write' ? 'workspace-write' : 'read-only';
-  return { mode, approval, workspaceRoot: sandbox?.workspaceRoot, cwd: (agent.ctx.get('workingDirectory')
+  return { mode, approval, approvalPolicy: policy, workspaceRoot: sandbox?.workspaceRoot, cwd: (agent.ctx.get('workingDirectory')
     ?? ctx.get('workingDirectory'))?.get(agent.session) ?? agent.session.header.cwd ?? sandbox?.workspaceRoot };
 }
 
 async function withinWorkspace(value, cwd, root) {
   if (typeof value !== 'string' || !root) return false;
   try {
-    let target = resolve(cwd, process.platform === 'win32' ? value.replace(/^\/(?=[a-z]:)/iu, '') : value);
+    const targetPath = process.platform === 'win32' ? value.replace(/^\/(?=[a-z]:)/iu, '') : value;
+    if (!targetPath || /[\p{Cc}\p{Cf}]/u.test(targetPath)
+      || (process.platform === 'win32' && /^(?:[a-z]:(?![\\/])|[\\/](?![a-z]:))/iu.test(targetPath))) return false;
+    let target = resolve(cwd, targetPath);
+    if (!isLocalAgyPath(target)) return false;
     // New files do not exist yet. Resolve their closest existing parent, too,
     // so junctions cannot turn an in-workspace approval into an external write.
     const ancestors = [];
@@ -100,18 +107,42 @@ async function withinWorkspace(value, cwd, root) {
 async function permission(ctx, agent, params, signal) {
   const policy = executionPolicy(agent, ctx);
   const { toolCall, options } = params;
-  const choice = kind => options?.find?.(option => option?.kind === kind && typeof option.optionId === 'string')?.optionId;
+  if (signal.aborted || !Array.isArray(options) || !options.length || options.length > 16) return cancelledPermission;
+  const ids = options.map(option => option?.optionId);
+  if (ids.some(id => typeof id !== 'string' || !id) || new Set(ids).size !== ids.length) return cancelledPermission;
+  const choice = kind => {
+    const matches = options.filter(option => option.kind === kind);
+    return matches.length === 1 ? matches[0].optionId : undefined;
+  };
   const allow = choice('allow_once'), deny = choice('reject_once');
   const selected = optionId => optionId ? { outcome: { outcome: 'selected', optionId } } : cancelledPermission;
-  if (!allow || !toolCall || signal.aborted || !['review', 'workspace-write'].includes(policy.mode) || !policy.approval) return selected(deny);
-  if (policy.mode === 'workspace-write') {
-    const subject = toolCall.rawInput?.Path ?? toolCall.rawInput?.path ?? toolCall.locations?.[0]?.path;
-    if (toolCall.kind !== 'edit' || !await withinWorkspace(subject, policy.cwd, policy.workspaceRoot)) return selected(deny);
-  }
+  if (!allow || typeof toolCall?.toolCallId !== 'string' || !toolCall.toolCallId || !policy.approval) return selected(deny);
+  const samePolicy = () => {
+    const current = executionPolicy(agent, ctx);
+    return current.mode === policy.mode && current.cwd === policy.cwd && current.workspaceRoot === policy.workspaceRoot
+      && Boolean(current.approval) && current.approvalPolicy !== 'never';
+  };
+  if (policy.mode === 'read-only' || policy.mode === 'workspace-write') {
+    // ACP locations use the class of the operation as well as path(s). Never
+    // ask the user to override the DSH sandbox for a command or unknown action.
+    if (toolCall.kind !== 'read' && !(policy.mode === 'workspace-write' && ['edit', 'delete'].includes(toolCall.kind))) return selected(deny);
+    const locations = toolCall.locations;
+    if (locations !== undefined && !Array.isArray(locations)) return selected(deny);
+    const reported = locations?.map(location => location?.path) ?? [];
+    const rawPaths = [toolCall.rawInput?.Path, toolCall.rawInput?.path].filter(value => value !== undefined);
+    const paths = [...new Set([...reported, ...rawPaths])];
+    if (!paths.length || paths.length > 32) return selected(deny);
+    for (const subject of paths) {
+      if (!await withinWorkspace(subject, policy.cwd, policy.workspaceRoot)) return selected(deny);
+    }
+  } else if (policy.mode !== 'review') return selected(deny);
+  if (signal.aborted) return cancelledPermission;
+  if (!samePolicy()) return selected(deny);
   const reason = String(toolCall.title ?? toolCall.kind ?? '工具操作').replace(/[\p{Cc}\p{Cf}]/gu, ' ').slice(0, 1000);
-  const outcome = await policy.approval.request({ agent, toolName: 'Google Antigravity', reason, signal });
-  if (signal.aborted || outcome === 'cancelled') return cancelledPermission;
-  return selected(outcome === 'allowed-once' ? allow : deny);
+  const approvalSignal = AbortSignal.any([signal, AbortSignal.timeout(120_000)]);
+  const outcome = await policy.approval.request({ agent, toolName: 'Google Antigravity', reason, signal: approvalSignal });
+  if (signal.aborted) return cancelledPermission;
+  return selected(outcome === 'allowed-once' && !approvalSignal.aborted && samePolicy() ? allow : deny);
 }
 
 /** Install an ordinary DSH adapter; it owns the ACP process, not the chat surface. */
@@ -161,18 +192,29 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
   const allowedMcp = config.mcp ?? ['knowledge', 'windows', 'playwright', 'remote'];
   let catalog, images = false, loading, authInFlight;
   let status = 'unchecked';
+  let failedAt = -Infinity;
 
-  function refresh(options, imageSupport = false, notify = true, reasoning = new Map()) {
+  function refresh(options, imageSupport = false, notify = true, reasoning = new Map(), emptyStatus = 'unavailable') {
     const next = modelRows(options, imageSupport, reasoning);
-    const changed = JSON.stringify(catalog) !== JSON.stringify(next);
-    catalog = next;
-    images = imageSupport;
-    status = next.length ? 'ready' : 'unavailable';
+    const nextStatus = next.length ? 'ready' : emptyStatus;
+    // The native send controller checks listModels before stream(). Retain
+    // the last verified IDs across a transient outage for that admission;
+    // stream() still probes again before dispatching to an available model.
+    const rows = nextStatus === 'unavailable' && catalog?.length ? catalog : next;
+    const changed = status !== nextStatus || JSON.stringify(catalog) !== JSON.stringify(rows);
+    if (rows === next) images = imageSupport;
+    catalog = rows;
+    status = nextStatus;
+    failedAt = status === 'unavailable' ? Date.now() : -Infinity;
     if (notify && changed && !lifetime.signal.aborted) ctx.emit('llm/models-updated', GOOGLE);
   }
 
-  async function inspect(force = false) {
-    if (!loading && (force || !catalog) && !lifetime.signal.aborted) {
+  async function inspect(force = false, forSend = false) {
+    const retry = status === 'unavailable' && Date.now() - failedAt >= CATALOG_RETRY_MS;
+    const sendRetry = forSend && (status === 'unavailable' || !catalog?.length)
+      && status !== 'signed-out' && status !== 'missing-cli';
+    if (!loading && (force || sendRetry || retry || !catalog) && !lifetime.signal.aborted) {
+      const notify = force || status !== 'unchecked';
       loading = (async () => {
         let session;
         try {
@@ -193,11 +235,11 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
               if (!session.options) break;
             }
           }
-          refresh(initial, session.capabilities?.promptCapabilities?.image === true, force, reasoning);
+          refresh(initial, session.capabilities?.promptCapabilities?.image === true, notify, reasoning);
         } catch (error) {
-          refresh(undefined, false, force);
           const { code } = asLocalError(error);
-          status = code === 'AGY_LOGIN_REQUIRED' ? 'signed-out' : code === 'AGY_CLI_UNAVAILABLE' ? 'missing-cli' : 'unavailable';
+          refresh(undefined, false, notify, undefined,
+            code === 'AGY_LOGIN_REQUIRED' ? 'signed-out' : code === 'AGY_CLI_UNAVAILABLE' ? 'missing-cli' : 'unavailable');
         } finally { await session?.close().catch(() => {}); }
       })().finally(() => { loading = undefined; });
     }
@@ -205,11 +247,15 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
     return { status, modelCount: catalog?.length ?? 0 };
   }
 
-  async function closeChat(chat) {
+  async function closeChat(chat, confirm = false) {
     const { session, bridge } = chat;
     chat.session = chat.bridge = undefined;
     bridge?.setTurn(undefined);
-    await Promise.allSettled([session?.close(), bridge?.close()]);
+    const [closed] = await Promise.allSettled([session?.close(), bridge?.close()]);
+    if (confirm && closed.status === 'rejected') {
+      chat.retirementFailed = true;
+      throw closed.reason;
+    }
   }
 
   async function login(requestSignal) {
@@ -296,27 +342,60 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
       const reviewOnly = callbackMessages.length > 0;
       const chat = chats.get(id) ?? { running: false };
       if (chat.running) throw new LlmError('请等本轮 Google 回复完成。', 'AGY_BUSY');
+      if (chat.retirementFailed) throw new LlmError('旧的 Google Antigravity 进程未确认退出，请另开会话。', 'AGY_CLI_STILL_RUNNING');
       if (chat.attemptedStep === step) throw new LlmError('这条消息已交给 Gemini，DSH 不会重复发送。', 'AGY_NO_RESEND');
       chat.running = true;
       chats.set(id, chat);
       const cancellation = new AbortController();
       chat.cancel = () => cancellation.abort();
       const signal = AbortSignal.any([cancellation.signal, lifetime.signal, ...(request.signal ? [request.signal] : [])]);
-      let task, toolSet, finished = false, failure, outcome;
+      const steer = new AbortController();
+      const turnSignal = AbortSignal.any([signal, steer.signal]);
+      const pendingSteer = message => message?.source?.kind === 'user' && typeof message.source.rpcId === 'string'
+        && !returnIdOf(message) && authorize(agent, [message]) && agent.inbox.nextStep.includes(message);
+      const progress = agyProgress();
+      const stall = new AbortController();
+      const acpSignal = AbortSignal.any([turnSignal, stall.signal]);
+      let task, toolSet, silenceTimer, finished = false, failure, outcome;
       const chunks = [];
       let pulse = Promise.withResolvers();
       const stopWaiting = () => pulse.resolve();
-      signal.addEventListener('abort', stopWaiting, { once: true });
-      const push = (kind, value) => { if (!signal.aborted) { chunks.push({ kind, value }); pulse.resolve(); } };
-      try {
+      const stopSteer = agent.ctx.on('agent/inbox/inserted', ({ agent: owner, message }) => {
+        if (owner === agent && !finished && pendingSteer(message)) steer.abort();
+      });
+      if (agent.inbox.nextStep.some(pendingSteer)) steer.abort();
+      acpSignal.addEventListener('abort', stopWaiting, { once: true });
+      let watchSilence = false;
+      const activity = () => {
+        if (!watchSilence || acpSignal.aborted) return;
+        clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(() => stall.abort(), RESTRICTED_SILENCE_MS).unref();
+      };
+      const push = (kind, value) => {
+        if (!acpSignal.aborted) { activity(); chunks.push({ kind, value }); pulse.resolve(); }
+      };
+      async function settleSteer() {
+        // A cancel acknowledgement preserves this ACP session. On failure the
+        // old child must be reaped before a later DSH step can reopen it.
+        await task;
         signal.throwIfAborted();
-        await inspect();
-        if (!catalog?.some(model => model.id === request.model)) {
+        if (failure || !chat.session?.options) {
+          if (task && chat.binding?.officialId) chat.resumeSteeredId = chat.binding.officialId;
+          await closeChat(chat, true);
+        }
+      }
+      try {
+        turnSignal.throwIfAborted();
+        await inspect(false, true);
+        turnSignal.throwIfAborted();
+        if (status !== 'ready' || !catalog?.some(model => model.id === request.model)) {
           const code = status === 'signed-out' ? 'auth-required' : status === 'missing-cli' ? 'missing-cli'
             : status === 'ready' ? 'model-unavailable' : 'connection-failed';
           throw asLocalError({ code });
         }
         const { cwd, mode } = executionPolicy(agent, ctx);
+        watchSilence = mode !== 'full';
+        chat.permissionActivity = activity;
         const preset = composedPreset(ctx, agent);
         const persona = preset === WRITING_PRESET ? WRITING_PERSONA : undefined;
         if (!isLocalAgyPath(cwd) || !(await stat(cwd).catch(() => undefined))?.isDirectory()) throw Object.assign(new Error('Invalid cwd'), { code: 'workspace-unavailable' });
@@ -324,12 +403,12 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
           const current = executionPolicy(agent, ctx);
           return current.mode === mode && current.cwd === cwd && composedPreset(ctx, agent) === preset;
         };
-        const blocks = await localPrompt(messages.flatMap(message => message.content), ctx.get('attachments'), signal);
+        const blocks = await localPrompt(messages.flatMap(message => message.content), ctx.get('attachments'), turnSignal);
         const toolsService = ctx.get('tools');
         const allowBridge = ['full', 'review'].includes(mode);
         // Child output is data to review, not authorization for another action.
         const useMcp = !reviewOnly && toolsService && allowedMcp.length && allowBridge;
-        if (useMcp) toolSet = await toolsService.resolve({ agent, signal, modelSelection: {
+        if (useMcp) toolSet = await toolsService.resolve({ agent, signal: turnSignal, modelSelection: {
           provider: GOOGLE, model: request.model, reasoningEffort: request.reasoningEffort,
         } });
         const tools = useMcp ? agyMcpTools(ctx, agent, toolSet, allowedMcp) : new Map();
@@ -337,7 +416,7 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
         const builtinTools = !reviewOnly && allowBridge && config.gptBridge !== false
           ? agyGptBridgeTools(ctx, { notify: fromOwnerPrompt ? returns.watch : undefined, cancelReturns }) : new Map();
         let dispatched = false;
-        const mcpTurn = { agent, tools, builtinTools, toolSet, signal, canCall: () => dispatched && samePolicy() };
+        const mcpTurn = { agent, tools, builtinTools, toolSet, signal: acpSignal, canCall: () => dispatched && samePolicy() };
         const routeKey = JSON.stringify([mode, preset, persona, [...tools.keys(), ...builtinTools.keys()].sort()]);
         if (chat.session && (!chat.session.options || chat.routeKey !== routeKey || !sameAgyPath(chat.cwd, cwd))) await closeChat(chat);
         const createdAt = agent.session.header.createdAt;
@@ -346,14 +425,22 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
         if (!chat.session) {
           if (tools.size || builtinTools.size) chat.bridge = await openAgyMcp(ctx);
           chat.bridge?.setTurn(mcpTurn);
-          const open = officialId => runtime.open(signal, { id, cwd, mode, officialId, persona, mcpServers: chat.bridge?.servers,
-            onPermission: (params, control) => permission(ctx, agent, params, control) });
+          const open = officialId => runtime.open(turnSignal, { id, cwd, mode, officialId, persona, mcpServers: chat.bridge?.servers,
+            async onPermission(params, control) {
+              chat.permissionActivity?.();
+              try { return await permission(ctx, agent, params, control); }
+              finally { chat.permissionActivity?.(); }
+            } });
           let throughTurn = 0;
           if (binding?.officialId && binding.persona === persona && sameAgyPath(binding.cwd, cwd)) {
             try { chat.session = await open(binding.officialId); throughTurn = binding.throughTurn; }
-            catch (error) { signal.throwIfAborted(); if (!canLoadFallback(error)) throw error; }
+            catch (error) {
+              turnSignal.throwIfAborted();
+              if (chat.resumeSteeredId === binding.officialId || !canLoadFallback(error)) throw error;
+            }
           }
           chat.session ??= await open();
+          chat.resumeSteeredId = undefined;
           chat.cwd = cwd;
           chat.routeKey = routeKey;
           chat.binding = { createdAt, cwd, officialId: chat.session.id, throughTurn, ...(persona ? { persona } : {}) };
@@ -362,26 +449,31 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
         const { model, reasoningEffort } = request;
         if (reasoningEffort !== undefined && chat.session.options.model.currentValue !== model) {
           // Switch the model first: the previous model's levels are not authoritative.
-          await chat.session.prepare({ model }, signal);
+          await chat.session.prepare({ model }, turnSignal);
         }
         const liveEfforts = reasoningOf(chat.session.options?.thoughtLevel)?.efforts;
-        await chat.session.prepare({ model, reasoningEffort: compatibleEffort(reasoningEffort, liveEfforts) }, signal);
+        await chat.session.prepare({ model, reasoningEffort: compatibleEffort(reasoningEffort, liveEfforts) }, turnSignal);
         const contextText = await prepareLocalHistory(agent.session, start, chat.binding.throughTurn, {
           archivePath: runtime.historyArchivePath?.(id),
         });
+        turnSignal.throwIfAborted();
         chat.attemptedStep = step;
-        task = chat.session.runTurn(blocks, { contextText, signal, onDelta: value => push('text', value),
+        task = chat.session.runTurn(blocks, { contextText, signal: acpSignal, onDelta: value => push('text', value),
           beforeDispatch() { if (!samePolicy()) throw new Error('DSH execution policy changed'); },
-          onDispatch() { dispatched = true; },
+          onDispatch() { dispatched = true; activity(); },
           onThought: value => push('thought', value), onTool: value => push('tool', value),
-        }).then(value => { outcome = value; }, error => { failure = error; }).finally(() => { finished = true; pulse.resolve(); });
-        const progress = agyProgress();
+        }).then(value => { outcome = value; }, error => { failure = error; }).finally(() => {
+          finished = true;
+          watchSilence = false;
+          clearTimeout(silenceTimer);
+          pulse.resolve();
+        });
         while (!finished || chunks.length) {
-          signal.throwIfAborted();
+          acpSignal.throwIfAborted();
           if (!chunks.length) { await pulse.promise; pulse = Promise.withResolvers(); continue; }
           yield* progress.push(chunks.shift());
         }
-        signal.throwIfAborted();
+        acpSignal.throwIfAborted();
         if (failure) throw failure;
         if (outcome?.status === 'interrupted') throw new LlmError('Google Antigravity 中止了这轮回复。', 'AGY_INTERRUPTED');
         if (!progress.hasAnswer) {
@@ -399,11 +491,29 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
         yield { type: 'finish', reason: { kind: outcome?.stopReason === 'max_tokens' ? 'max-tokens' : 'stop' } };
       } catch (error) {
         if (signal.aborted) throw signal.reason;
-        await closeChat(chat);
-        throw asLocalError(error);
+        if (stall.signal.aborted && !steer.signal.aborted) {
+          await settleSteer();
+          throw new LlmError('Google Antigravity 长时间没有进展，本轮已取消。若任务需要终端或 MCP，请切到「完全权限 + 需确认」。', 'AGY_NO_PROGRESS');
+        }
+        if (!steer.signal.aborted) {
+          await closeChat(chat);
+          const fault = asLocalError(error);
+          if (fault.code === 'AGY_CONNECTION_FAILED') refresh(undefined);
+          else if (fault.code === 'AGY_LOGIN_REQUIRED') refresh(undefined, false, true, undefined, 'signed-out');
+          throw fault;
+        }
+        // Finish the native DSH step normally so it can claim nextStep. An
+        // abort finish would discard the running step instead of advancing it.
+        try { await settleSteer(); }
+        catch (error) { if (signal.aborted) throw signal.reason; throw asLocalError(error); }
+        yield* progress.close();
+        yield { type: 'finish', reason: { kind: 'stop' } };
       } finally {
+        stopSteer();
+        chat.permissionActivity = undefined;
+        clearTimeout(silenceTimer);
         cancellation.abort();
-        signal.removeEventListener('abort', stopWaiting);
+        acpSignal.removeEventListener('abort', stopWaiting);
         await task;
         chat.bridge?.setTurn(undefined);
         toolSet?.dispose();

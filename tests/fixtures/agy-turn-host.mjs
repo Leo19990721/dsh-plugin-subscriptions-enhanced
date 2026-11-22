@@ -57,13 +57,14 @@ function fakeChild(onRequest, onExit) {
 }
 
 function fakeSessionFactory({ root, cwd, configurations, acpConfig, acpCalls, acpExits, acpPrompt, apis }) {
-  return ({ cwd: requestedCwd = cwd, signal, mcpServers } = {}) => {
+  return ({ cwd: requestedCwd = cwd, signal, mcpServers, onPermission } = {}) => {
     signal?.throwIfAborted();
     assert.equal(requestedCwd, cwd, 'only the fixture directory can reach synthetic ACP');
     let id;
-    return createAgyTurnSession({ cwd, mcpServers, timeLimits: { open: 2500, turn: 4500, cancel: 2500 }, makeClient: callbacks => new AgyAcpClient({
+    return createAgyTurnSession({ cwd, mcpServers, onPermission, timeLimits: { open: 2500, turn: 4500, cancel: 250 }, makeClient: callbacks => new AgyAcpClient({
       ...callbacks, cwd, executable: join(root, 'never-launched-agy.exe'), env: {}, timeoutMs: 2500, allowMcpServers: Boolean(mcpServers?.length),
-      spawnFactory: () => fakeChild(({ id: rpcId, method, params }, child) => {
+      spawnFactory: () => fakeChild(({ id: rpcId, method, params, result: peerResult }, child) => {
+        if (method === undefined && rpcId !== undefined) return apis.onPermissionReply?.(rpcId, peerResult);
         acpCalls.push({ method, params, hasId: rpcId !== undefined });
         const result = value => child.send({ id: rpcId, result: value });
         const error = (code, message) => child.send({ id: rpcId, error: { code, message } });
@@ -96,7 +97,10 @@ function fakeSessionFactory({ root, cwd, configurations, acpConfig, acpCalls, ac
           const update = text => delta({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
           const reply = (stopReason = 'end_turn') => result({ stopReason });
           const prompt = apis.acpPrompt ?? acpPrompt;
-          if (prompt) return prompt({ id: rpcId, sessionId: id, params, reply, update, delta, disconnect: child.disconnect, error });
+          const ask = (permissionId, toolCall, options = [{ kind: 'allow_once', optionId: 'allow' }, { kind: 'reject_once', optionId: 'deny' }]) => child.send({
+            id: permissionId, method: 'session/request_permission', params: { sessionId: id, toolCall, options },
+          });
+          if (prompt) return prompt({ id: rpcId, sessionId: id, params, reply, update, delta, ask, disconnect: child.disconnect, error });
           update('合成 Antigravity 回复');
           return reply();
         }
@@ -206,7 +210,7 @@ export async function createTurnHost(t, {
       });
       if (localPermissions) {
         scope.provide('sandboxPolicy', { resolve: ({ session }) => ({ mode: localPermissions.mode ?? 'danger-full-access', workspaceRoot: session.header.cwd ?? cwd }) });
-        scope.provide('approval', { overrideOf: () => localPermissions.approval ?? 'never', request: input => localPermissions.request?.(input) ?? 'rejected' });
+        if (!localPermissions.native) scope.provide('approval', { overrideOf: () => localPermissions.approval ?? 'never', request: input => localPermissions.request?.(input) ?? 'rejected' });
       }
       if (!hasUploads) {
         scope.provide('attachments', {
@@ -257,6 +261,11 @@ export async function createTurnHost(t, {
       await mount(BasicCompactionEngine, {});
     }
     await mount(system.SystemPrompt, {});
+    if (localPermissions?.native) {
+      const { default: ApprovalService } = await import('@deepseek-ai/dsh-user-approval');
+      await mount(ApprovalService, { policy: localPermissions.approval ?? 'ask' });
+      ctx.on('approval/request', input => Promise.resolve(localPermissions.request(input)), { global: true });
+    }
     await mount(tools.ToolsService, {});
     await mount(toolExecutor);
     await mount(access.default);
