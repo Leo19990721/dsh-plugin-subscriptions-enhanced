@@ -12,7 +12,7 @@ const headers = { 'cache-control': 'no-store' };
 
 export function apply(ctx, config = {}, makeRuntime = createLocalAgy) {
   const enabled = AGY_LOOPBACK.test(ctx.webServer.host ?? '');
-  const witness = installAgyWitness(ctx, { nativeActions: true });
+  const witness = installAgyWitness(ctx, { nativeActions: true, localCarrier: true });
   let google;
   if (enabled) {
     const home = resolveDshHome();

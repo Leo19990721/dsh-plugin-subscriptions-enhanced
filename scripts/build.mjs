@@ -45,7 +45,7 @@ host = host.replaceAll('Settings → Subscriptions', 'Settings → Models')
   .replaceAll('Settings > Subscriptions', 'Settings > Models').replaceAll('设置 → 订阅', '设置 → 模型');
 client = retireAntigravityClient(patchCodexUltrafastClient(patchModelsSettings(client, replaceOnce), replaceOnce));
 client = replaceOnce(client, 'registerEnhancedModelsSettings(ctx, connection, t, SubscriptionsSection);',
-  'const quotaState = installAgyClient(ctx);\n\tconst agyT = ctx.locale.bind(agySection);\n\tregisterEnhancedModelsSettings(ctx, connection, t, SubscriptionsSection, quotaState);');
+  'const quotaState = installAgyClient(ctx);\n\tconst agyT = ctx.locale.bind(agySection);\n\tctx.inject(["modelDirectories"], (scope) => registerAgyTeamMenu(scope, react.createElement));\n\tregisterEnhancedModelsSettings(ctx, connection, t, SubscriptionsSection, quotaState);');
 client = replaceOnce(client, `			currentModel: createCurrentModelReader(models, sessionId)
 		})
 	}, SubscriptionUsageBadge));`, `			currentModel: createCurrentModelReader(models, sessionId),
@@ -60,7 +60,7 @@ client = replaceOnce(client, 'function SubscriptionUsageBadge({ rpc, currentMode
 client = replaceOnce(client, 'const [lastSubscription, setLastSubscription] = (0, react.useState)(void 0);',
   'const [lastSubscription, setLastSubscription] = legacySelection;');
 const clientSources = await Promise.all(['badge-compat.js', 'models-settings-ui.js', 'agy-client.js', 'agy-quota-state.js',
-  'agy-usage-dock.js'].map(async name =>
+  'agy-usage-dock.js', 'agy-team-menu.js'].map(async name =>
   (await readFile(join(root, 'src', name), 'utf8')).replace(/^export (?=function )/gm, '')));
 client = replaceOnce(client, 'return module.exports; } });', [...clientSources, 'return module.exports; } });'].join('\n'));
 client = client.replace('//# sourceMappingURL=client.js.map', '');

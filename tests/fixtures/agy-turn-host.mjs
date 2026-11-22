@@ -498,6 +498,23 @@ export async function createTurnHost(t, {
         request.destroy();
       }
     }
+    async function localCarrierPost(namespace, method, args, who = 'browser') {
+      const endpoint = `${namespace}/${method}`;
+      const request = { url: '/dsh-session-hosts/call', method: 'POST', socket: { remoteAddress: '127.0.0.1' }, headers: { host: headers.host } };
+      caller.set(request, who === 'owner' ? 'api' : who);
+      const { peer } = connection.admit(request);
+      assert.ok(peer);
+      const payload = { args };
+      return ctx.waterfall('session-hosts/local-call', { request, peer, endpoint, signal: t.signal }, async () => {
+        const response = await shared.fetch(new Request(`${origin}/api/${endpoint}`, {
+          method: 'POST', headers,
+          body: JSON.stringify({ type: 'client-request', rpcId: randomUUID(), method: endpoint, payload }),
+          signal: t.signal,
+        }), peer);
+        assert.equal(response.status, 200);
+        return (await response.json()).result;
+      });
+    }
     async function post(namespace, method, args = {}, who = 'browser') {
       const path = `/api/${namespace}/${method}`;
       const rpcId = randomUUID();
@@ -532,7 +549,7 @@ export async function createTurnHost(t, {
     }
     return {
       root, cwd, ctx, workspace, records, acpCalls, acpExits, ordinaryCalls, selects, ledger, apis, makeSession, probe,
-      requestPost, post, uploadBinary, invoke, agent, follow, dispose: release,
+      requestPost, post, localCarrierPost, uploadBinary, invoke, agent, follow, dispose: release,
       catalog: (sessionId, who) => post('session', 'modelCatalog', { request: { audience: 'conversation', sessionId } }, who),
       async create(options = {}) {
         const result = await post('session', 'create', { request: { workspaceId: workspace.id, ...options } });

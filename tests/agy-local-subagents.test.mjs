@@ -170,6 +170,45 @@ test('Gemini calls native subagent tools and receives the child relay and settle
   await assert.rejects(savedBridge('tools/list'), TypeError);
 });
 
+test('the local desktop carrier can start Gemini and a completed native child wakes the idle parent', { timeout: 12_000 }, async t => {
+  const release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  const input = [];
+  const h = await fixture(t, {
+    nativeSubagents: { spawn: { agentOptions: ORDINARY_SELECTION } },
+    async *ordinaryStream() {
+      await release.promise;
+      yield* answer('finished while the parent was idle');
+    },
+    async acpPrompt(turn) {
+      input.push(contentText(turn.params.prompt));
+      if (input.length === 1) {
+        await call(h.bridge(turn), 'subagent', { name: 'worker', description: 'Background local fixture', prompt: 'Finish in the background.' });
+      }
+      turn.update('Gemini parent reply');
+      turn.reply();
+    },
+  });
+  const id = await h.create();
+  ok(await h.select(id, GOOGLE));
+  const request = content => ({ request: { sessionId: id, mode: 'queue', requestId: randomUUID(), content: [text(content)] } });
+  ok(await h.localCarrierPost('session', 'prompt', request('local desktop message')));
+  try {
+    await h.idle(id);
+    assert.equal(input.length, 1);
+    assert.match(input[0], /local desktop message/);
+    assert.equal(h.started.length, 1);
+  } finally { release.resolve(); }
+  await h.settled(id);
+  assert.equal(input.length, 2);
+  assert.match(input[1], /finished while the parent was idle/);
+  assert.equal(end(h, id).kind, 'completed');
+  ok(await h.localCarrierPost('session', 'prompt', request('process peer is not the desktop'), 'owner'));
+  await h.idle(id);
+  assert.equal(input.length, 2, 'a non-browser owner does not obtain an ACP capability');
+  await h.cleanup();
+});
+
 test('native ordinary parent can spawn, message, and resume a Gemini child', { timeout: 12_000 }, async t => {
   let id, delegated = false, continued = false;
   const h = await fixture(t, {
