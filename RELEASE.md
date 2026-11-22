@@ -1,5 +1,10 @@
 # Subscriptions Enhanced
 
+## 0.3.1
+
+- Google Antigravity 额度面板按模型组展示，Gemini 通用额度置顶；周期名随界面语言显示，重置时间按本地时区显示。
+- 剩余额度用 DSH 主题的绿、橙、红提示；更新时间与 G1 积分放在底部。刷新时保留上次结果，仍只按点击查询。
+
 ## 0.3.0
 
 - 在 Google Antigravity 管理卡片内按需查询剩余额度、重置时间和 G1 Credits，无需打开外部终端。

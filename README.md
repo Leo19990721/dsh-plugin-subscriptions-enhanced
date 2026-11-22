@@ -4,7 +4,7 @@
 
 ## 在 DSH 用本机 Gemini 干活
 
-`0.3.0` 移除了 `engines.dsh`，保留对 DSH 接口包的 peer 依赖。已验证的环境为 Windows DSH Desktop `0.2.2-rc.5` 和 Google 官方 Antigravity CLI `1.5.12`（x64）。在原来的聊天模型菜单或 `/model` 里选 **Google Antigravity → Gemini**，不用换预设或另开会话。仍只走[官方 `agy acp`](https://antigravity.google/docs/ide/extensions/acp/)，没有旧私有直连备用通道。
+自 `0.3.0` 起不再声明 `engines.dsh`，保留对 DSH 接口包的 peer 依赖。已验证的环境为 Windows DSH Desktop `0.2.2-rc.5` 和 Google 官方 Antigravity CLI `1.5.12`（x64）。在原来的聊天模型菜单或 `/model` 里选 **Google Antigravity → Gemini**，不用换预设或另开会话。仍只走[官方 `agy acp`](https://antigravity.google/docs/ide/extensions/acp/)，没有旧私有直连备用通道。
 
 - **工作目录和工具**：使用当前会话的实际工作目录，包含 DSH 已提交的目录变更。DSH「完全权限／无需审批」时，`agy` 按本机权限读写文件、跑命令、联网；完全权限但要求审批时，ACP 的确认请求交给 DSH。受限模式不会放开终端和 MCP（`agy` 的终端沙箱不等同于 DSH 沙箱）。只读模式不写文件；工作区写入模式下，工作区内的 `agy` 编辑由 DSH 审批。
 - **进度和附件**：实时思考片段、工具名、运行状态及可用的短结果都能在原生「思考」折叠项里看；工具只由 `agy` 执行一次。拖入图片会发送图像；普通附件按 DSH 的实际存储路径交给 `agy` 按需读取，粘贴文件路径也可以。去掉旧版 64 KiB 文本门槛，仍受 DSH 附件限制、ACP 单帧 16 MiB 上限及模型上下文限制。

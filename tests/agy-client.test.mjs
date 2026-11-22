@@ -9,11 +9,15 @@ const accountsSlot = 'subscriptions-enhanced-accounts';
 const footer = 'settings.models.footer';
 const nextTick = () => new Promise(resolve => setImmediate(resolve));
 
-function activate() {
+function activate(lang, now = Date.now()) {
   let module;
   new Script(source).runInNewContext({
     AbortController,
     DOMException,
+    Date: class extends Date {
+      constructor(...args) { super(...(args.length ? args : [now])); }
+      static now() { return now; }
+    },
     setInterval,
     clearInterval,
     setTimeout,
@@ -102,7 +106,9 @@ function activate() {
       effectIndex = 0;
       effects.length = 0;
       renderStarted = true;
-      return renderComponent(entry.view({ ...injected, t: key => key, agyT: key => key }));
+      const dictionary = locales.get(endpoint)?.[lang];
+      const agyT = (key, args) => (dictionary?.[key] ?? key).replace(/\{(\w+)\}/g, (_, name) => args?.[name]);
+      return renderComponent(entry.view({ ...injected, t: key => key, agyT }));
     },
     mount() {
       cleanups = effects.map(item => item?.create?.()).filter(fn => typeof fn === 'function');
@@ -230,18 +236,57 @@ test('Check quota is a connected Manage action and never replaces availability o
   await nextTick();
   view = row();
   assert.ok(nodes(view).some(n => n.props?.role === 'progressbar' && n.props['aria-valuenow'] === 63));
-  assert.ok(nodes(view).some(n => n.type === 'p' && n.children.includes('quotaCredits') && n.children.includes(0)));
+  assert.ok(feedback(view, 'status', 'quotaUpdated'));
+  assert.ok(nodes(view).some(n => n.type === 'small' && n.children.includes('quotaCredits') && n.children.includes(0)));
   assert.ok(nodes(view).some(n => n.props?.['data-state'] === 'connected' && n.children.includes('readyShort')));
   assert.equal(agyCalls(f).length, 2, 'quota never rechecks connection status or auto-refreshes');
 
   button(view, 'refreshQuota').props.onClick();
+  const refreshing = row();
+  assert.ok(feedback(refreshing, 'status', 'openingQuota'));
+  assert.ok(nodes(refreshing).some(n => n.props?.role === 'progressbar' && n.props['aria-valuenow'] === 63), 'keep the last result visible during refresh');
+  assert.equal(button(refreshing, 'refreshQuota').props['aria-disabled'], true);
   agyCalls(f)[2].resolve({ ok: false, error: { code: 'AGY_QUOTA_FAILED', message: 'synthetic' } });
   await nextTick();
   view = row();
-  assert.ok(feedback(view, 'alert', 'quotaStale'));
+  assert.ok(feedback(view, 'status', 'quotaStale'));
   assert.ok(nodes(view).some(n => n.props?.role === 'progressbar'));
   assert.equal(button(view, 'refreshQuota').props['aria-disabled'], false);
   assert.ok(nodes(view).some(n => n.props?.['data-state'] === 'connected'));
+});
+
+test('quota groups, cycle names, local time and threshold colors render in both languages', async t => {
+  const at = (day, hour, minute) => new Date(2026, 10, day, hour, minute).toISOString();
+  for (const lang of ['zh', 'en']) {
+    const f = activate(lang, Date.parse(at(22, 13, 47)));
+    f.render();
+    t.after(f.mount());
+    await nextTick();
+    agyCalls(f)[0].resolve(available('ready'));
+    await nextTick();
+    const page = () => nodes(f.render());
+    page().find(n => n.props?.id?.endsWith('-manage')).props.onClick();
+    page().find(n => n.type === 'button' && n.children.includes(lang === 'zh' ? '查看额度' : 'Check quota')).props.onClick();
+    agyCalls(f)[1].resolve({ ok: true, value: { windows: [
+      { group: 'Claude and GPT models', label: 'Weekly Limit Remaining', remainingPercent: 30, resetAt: at(28, 23, 2) },
+      { group: 'Gemini Models', label: 'Five Hour Limit Remaining', remainingPercent: 55, resetAt: at(22, 16, 53) },
+      { group: 'Gemini 4 Argon', label: 'Gemini 4 Argon Weekly Limit', remainingPercent: 10, resetAt: at(22, 12, 0) },
+    ], credits: { remaining: 0 }, fetchedAt: at(22, 13, 47) } });
+    await nextTick();
+    const rendered = page();
+    assert.deepEqual(rendered.filter(n => n.props?.className === 'dsh-agy-quota-group').map(n => n.props['aria-label']),
+      lang === 'zh' ? ['Gemini 模型', 'Claude / GPT 模型', 'Gemini 4 Argon'] : ['Gemini models', 'Claude / GPT models', 'Gemini 4 Argon']);
+    assert.deepEqual(rendered.filter(n => n.props?.className === 'dsh-agy-quota-percent').map(n => [n.children[0], n.props.style.color]), [
+      ['55%', 'var(--dsw-alias-state-success-primary)'], ['30%', 'var(--dsw-alias-state-warn-label)'], ['10%', 'var(--dsw-alias-state-error-primary)'],
+    ]);
+    const labels = rendered.flatMap(n => n.children.filter(child => typeof child === 'string'));
+    for (const label of lang === 'zh'
+      ? ['周额度', '5 小时额度', '今天 16:53 重置', '11/28 23:02 重置', '13:47 更新', 'G1 积分余额', '重置时间已过，请刷新']
+      : ['Weekly quota', '5-hour quota', 'Resets today at 16:53', 'Resets 11/28 23:02', 'Updated 13:47', 'G1 Credits balance', 'Reset time passed; refresh to check']) {
+      assert.ok(labels.includes(label), label);
+    }
+    assert.equal(agyCalls(f).length, 2);
+  }
 });
 
 test('expanding Add subscription account replaces the dashed button with a native addCard containing unconnected Google Antigravity', async () => {

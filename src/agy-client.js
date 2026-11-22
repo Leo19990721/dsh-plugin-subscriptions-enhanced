@@ -17,12 +17,18 @@ const agyCopy = {
     openQuota: '查看额度',
     refreshQuota: '刷新额度',
     openingQuota: '正在查询额度…',
+    quotaUpdated: '额度已更新',
     quotaFailed: '暂时查不到 Google 额度，请检查官方 CLI 登录和网络代理后重试。',
     quotaStale: '刷新失败，下面是上次查到的额度。',
+    quotaGemini: 'Gemini 模型',
+    quotaClaudeGpt: 'Claude / GPT 模型',
+    quotaWeekly: '周额度',
+    quotaFiveHour: '5 小时额度',
     quotaRemaining: '剩余 {percent}%',
+    quotaToday: '今天 {time}',
     quotaReset: '{time} 重置',
-    quotaCredits: 'G1 Credits 余额',
-    quotaFetched: '查询于 {time}',
+    quotaCredits: 'G1 积分余额',
+    quotaFetched: '{time} 更新',
     quotaResetPassed: '重置时间已过，请刷新',
     quotaUpgrade: '查看升级选项',
     login: '登录',
@@ -51,12 +57,18 @@ const agyCopy = {
     openQuota: 'Check quota',
     refreshQuota: 'Refresh quota',
     openingQuota: 'Checking quota…',
+    quotaUpdated: 'Quota updated',
     quotaFailed: 'Could not check Google quota. Check CLI sign-in and proxy settings, then retry.',
     quotaStale: 'Refresh failed. Showing the last successful check.',
+    quotaGemini: 'Gemini models',
+    quotaClaudeGpt: 'Claude / GPT models',
+    quotaWeekly: 'Weekly quota',
+    quotaFiveHour: '5-hour quota',
     quotaRemaining: '{percent}% remaining',
+    quotaToday: 'today at {time}',
     quotaReset: 'Resets {time}',
     quotaCredits: 'G1 Credits balance',
-    quotaFetched: 'Checked {time}',
+    quotaFetched: 'Updated {time}',
     quotaResetPassed: 'Reset time passed; refresh to check',
     quotaUpgrade: 'See upgrade options',
     login: 'Log in',
@@ -173,31 +185,53 @@ function useEnhancedGoogleStatus(rpc) {
   };
 }
 
-function agyLocalReset(value) {
+function agyQuotaTime(value, today, t, reset = false) {
   const date = new Date(value);
   const pad = n => String(n).padStart(2, '0');
-  return `${date.getMonth() + 1}/${date.getDate()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  if (date.toDateString() !== today.toDateString()) return `${date.getMonth() + 1}/${date.getDate()} ${time}`;
+  return reset ? t('quotaToday', { time }) : time;
 }
 
 function AgyQuotaCard({ quota, t }) {
   const h = react.createElement;
-  return h('div', { 'aria-label': t('refreshQuota'), style: { display: 'grid', gap: 8 } },
-    ...quota.windows.map(({ group, label, remainingPercent, resetAt }) => {
-      const title = `${group} · ${label}`;
-      const color = usageBarColor(100 - remainingPercent);
-      return h('div', { key: title },
-        h('div', { style: styles$5.statusLine }, title),
-        h('div', { style: { ...styles$5.statusLine, color } },
-          t('quotaRemaining', { percent: remainingPercent }), ' · ',
-          Date.parse(resetAt) <= Date.now() ? t('quotaResetPassed') : t('quotaReset', { time: agyLocalReset(resetAt) })),
-        h('div', { role: 'progressbar', 'aria-label': title, 'aria-valuenow': remainingPercent, style: styles$5.usageTrack },
-          h('div', { style: { ...styles$5.usageFill, width: `${remainingPercent}%`, background: color } })));
+  const today = new Date(useQuotaClock());
+  const groups = new Map();
+  for (const row of quota.windows) {
+    const key = /^gemini models$/i.test(row.group) ? 'quotaGemini'
+      : /^claude and gpt models$/i.test(row.group) ? 'quotaClaudeGpt' : row.group;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  }
+  const ordered = [...groups].sort(([a], [b]) => Number(b === 'quotaGemini') - Number(a === 'quotaGemini'));
+  return h('div', { className: 'dsh-agy-quota' },
+    ...ordered.map(([group, rows]) => {
+      const heading = group === 'quotaGemini' || group === 'quotaClaudeGpt' ? t(group) : group;
+      return h('div', { key: group, className: 'dsh-agy-quota-group', role: 'group', 'aria-label': heading },
+        h('div', { className: 'dsh-agy-quota-heading' }, heading),
+        ...rows.map(({ label, remainingPercent, resetAt }) => {
+          const cycle = /\bweekly limit(?: remaining)?$/iu.test(label) ? t('quotaWeekly')
+            : /\bfive hour limit(?: remaining)?$/iu.test(label) ? t('quotaFiveHour') : label;
+          const color = remainingPercent <= 10 ? 'var(--dsw-alias-state-error-primary)'
+            : remainingPercent <= 30 ? 'var(--dsw-alias-state-warn-label)' : 'var(--dsw-alias-state-success-primary)';
+          return h('div', { key: label + resetAt, className: 'dsh-agy-quota-window' },
+            h('div', { className: 'dsh-agy-quota-line' },
+              h('span', null, cycle),
+              h('span', { className: 'dsh-agy-quota-summary' },
+                h('strong', { className: 'dsh-agy-quota-percent', style: { color } }, `${remainingPercent}%`),
+                h('small', null, Date.parse(resetAt) <= today.getTime() ? t('quotaResetPassed')
+                  : t('quotaReset', { time: agyQuotaTime(resetAt, today, t, true) })))),
+            h('div', { role: 'progressbar', 'aria-label': `${heading} · ${cycle}`, 'aria-valuenow': remainingPercent,
+              'aria-valuetext': t('quotaRemaining', { percent: remainingPercent }), style: styles$5.usageTrack },
+              h('div', { style: { ...styles$5.usageFill, width: `${remainingPercent}%`, background: color } })));
+        }));
     }),
-    h('p', { style: styles$5.statusLine }, t('quotaCredits'), ': ', quota.credits.remaining,
-      quota.credits.upgradeUrl === 'https://antigravity.google/g1-upgrade' && h('a', {
-        href: quota.credits.upgradeUrl, target: '_blank', rel: 'noreferrer noopener', style: { marginInlineStart: 8 },
-      }, t('quotaUpgrade'))),
-    h('small', { style: styles$5.statusLine }, t('quotaFetched', { time: agyLocalReset(quota.fetchedAt) })));
+    h('div', { className: 'dsh-agy-quota-footer' },
+      h('small', null, t('quotaFetched', { time: agyQuotaTime(quota.fetchedAt, today, t) })),
+      h('small', null, t('quotaCredits'), ' ', quota.credits.remaining,
+        quota.credits.upgradeUrl === 'https://antigravity.google/g1-upgrade' && h('a', {
+          href: quota.credits.upgradeUrl, target: '_blank', rel: 'noreferrer noopener', style: { marginInlineStart: 8 },
+        }, t('quotaUpgrade')))));
 }
 
 function EnhancedGoogleRow({ sectionId, state, open, toggle, t, agyT }) {
@@ -297,7 +331,9 @@ function EnhancedGoogleRow({ sectionId, state, open, toggle, t, agyT }) {
         disabled: checking || Boolean(busy),
         onClick: onLogout,
       }, agyT('logout'))),
-    busy === 'quota' && h('p', { role: 'status', style: styles$5.statusLine }, agyT('openingQuota')),
-    connected && state.quotaFailed && h('p', { role: 'alert', style: styles$5.errorLine }, agyT(state.quota ? 'quotaStale' : 'quotaFailed')),
+    connected && h('p', { role: 'status', 'aria-atomic': true,
+      className: 'dsh-agy-quota-feedback', style: busy !== 'quota' && state.quotaFailed ? styles$5.errorLine : styles$5.statusLine },
+      busy === 'quota' ? agyT('openingQuota') : state.quotaFailed ? agyT(state.quota ? 'quotaStale' : 'quotaFailed')
+        : state.quota ? agyT('quotaUpdated') : null),
     connected && state.quota && h(AgyQuotaCard, { quota: state.quota, t: agyT })));
 }
