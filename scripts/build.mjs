@@ -31,7 +31,7 @@ host = replaceOnce(host, 'const Config = z.object({', `const Config = z.object({
 		proxy: z.string().default("auto").description("auto: use the enabled subscription proxy, then environment or Windows system proxy; direct or empty: no proxy; otherwise a proxy URL."),
 		dataDir: z.string().description("Optional absolute path for the persistent DSH-owned Google CLI state."),
 		agentsFile: z.string().description("Optional absolute path to global instructions; empty disables loading them."),
-		mcp: z.array(z.union(["knowledge", "windows", "playwright", "remote"])).default(["knowledge", "windows", "playwright", "remote"]).description("Existing DSH tool groups available to Gemini with Full Access; [] disables the bridge."),
+		mcp: z.array(z.string().pattern(/^[A-Za-z0-9_-]{1,32}$/)).required(false).description("Optional DSH MCP server allowlist (remote includes native Remote tools); omitted discovers enabled servers, [] disables their bridge."),
 		gptBridge: z.boolean().default(true).description("Allow Gemini to delegate and coordinate parallel non-Google DSH sessions via built-in MCP tools.")
 	}),`);
 host = replaceOnce(host, 'function apply(ctx, config) {', 'function apply(ctx, config) {\n\tctx.plugin(writing, { localGoogle: true });\n\tctx.plugin(agy, config.google);');
@@ -69,7 +69,7 @@ await mkdir(join(root, 'lib'), { recursive: true });
 await writeFile(join(root, 'lib/index.js'), host);
 await writeFile(join(root, 'lib/client.js'), client);
 for (const name of ['writing-policy.js', 'writing-host.js', 'agy-local-plugin.js', 'agy-local-host.js', 'agy-local-runtime.js',
-  'agy-local-context.js', 'agy-local-progress.js', 'agy-local-proxy.js', 'agy-local-mcp.js', 'agy-local-gpt-bridge.js', 'agy-local-storage.js',
+  'agy-local-context.js', 'agy-local-progress.js', 'agy-local-proxy.js', 'agy-local-mcp.js', 'agy-local-gpt-bridge.js', 'agy-local-storage.js', 'agy-local-persona.js',
   'agy-ingress.js', 'agy-identity.js', 'agy-launch.js', 'agy-acp-client.js', 'agy-session.js', 'agy-turn-session.js', 'agy-turn-options.js']) {
   await copyFile(join(root, 'src', name), join(root, 'lib', name));
 }

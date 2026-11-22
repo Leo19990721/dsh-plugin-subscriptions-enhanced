@@ -41,7 +41,7 @@ test('packed subscription release has no private host data or local source map p
   }
   const runtime = ['client.js', 'index.js', 'upstream.json', 'writing-host.js', 'writing-policy.js',
     'agy-local-plugin.js', 'agy-local-host.js', 'agy-local-runtime.js', 'agy-local-context.js', 'agy-local-progress.js',
-    'agy-local-proxy.js', 'agy-local-mcp.js', 'agy-local-gpt-bridge.js', 'agy-local-storage.js', 'agy-ingress.js', 'agy-identity.js',
+    'agy-local-proxy.js', 'agy-local-mcp.js', 'agy-local-gpt-bridge.js', 'agy-local-storage.js', 'agy-local-persona.js', 'agy-ingress.js', 'agy-identity.js',
     'agy-launch.js', 'agy-acp-client.js', 'agy-session.js', 'agy-turn-session.js', 'agy-turn-options.js'];
   const expected = [...runtime.map(file => `lib/${file}`), 'package.json', 'NOTICE', 'LICENSE', 'LICENSE-DSH',
     'README.md', 'cordis.patch.yml', 'icon.svg', 'locale/en.json', 'locale/zh.json'];

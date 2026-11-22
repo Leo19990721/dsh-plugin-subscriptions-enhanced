@@ -95,7 +95,7 @@ test('parallel returns correlate the exact request, bound the summary and honor 
   assert.equal(notices.length, 1);
   const [destination, body] = notices[0];
   assert.equal(destination, parent);
-  assert.match(body, /不要再次自动派活[\s\S]*start[\s\S]*end/);
+  assert.match(body, /^\[GPT 回传 · 任务（本轮已结束）\]\n\nstart[\s\S]*end$/);
   assert.doesNotMatch(body, /unrelated|wrong/);
   assert.ok(body.length < 5300);
   for (const cancel of [() => returns.cancel('parent'), () => returns.cancel('child'), () => lifetime.abort()]) {

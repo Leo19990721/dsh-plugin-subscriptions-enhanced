@@ -5,6 +5,7 @@ import { LlmAdapter, LlmError, resolveRetryPolicy } from '@deepseek-ai/dsh-llm';
 import { prepareLocalHistory, localPrompt, localSubmissions } from './agy-local-context.js';
 import { agyGptBridgeTools, createGptReturns, GPT_RETURN_PREFIX } from './agy-local-gpt-bridge.js';
 import { agyMcpTools, openAgyMcp } from './agy-local-mcp.js';
+import { resolveAgyPresetPersona } from './agy-local-persona.js';
 import { agyProgress, agyUsage } from './agy-local-progress.js';
 import { createLocalAgy } from './agy-local-runtime.js';
 import { isLocalAgyPath, sameAgyPath } from './agy-launch.js';
@@ -114,15 +115,16 @@ async function permission(ctx, agent, params, signal) {
     const matches = options.filter(option => option.kind === kind);
     return matches.length === 1 ? matches[0].optionId : undefined;
   };
-  const allow = choice('allow_once'), deny = choice('reject_once');
+  const allow = choice('allow_once'), always = choice('allow_always'), deny = choice('reject_once');
   const selected = optionId => optionId ? { outcome: { outcome: 'selected', optionId } } : cancelledPermission;
-  if (!allow || typeof toolCall?.toolCallId !== 'string' || !toolCall.toolCallId || !policy.approval) return selected(deny);
+  if ((!allow && !always) || typeof toolCall?.toolCallId !== 'string' || !toolCall.toolCallId || !policy.approval) return selected(deny);
   const samePolicy = () => {
     const current = executionPolicy(agent, ctx);
     return current.mode === policy.mode && current.cwd === policy.cwd && current.workspaceRoot === policy.workspaceRoot
-      && Boolean(current.approval) && current.approvalPolicy !== 'never';
+      && Boolean(current.approval) && current.approvalPolicy === policy.approvalPolicy;
   };
-  if (policy.mode === 'read-only' || policy.mode === 'workspace-write') {
+  const restricted = policy.mode === 'read-only' || policy.mode === 'workspace-write';
+  if (restricted && toolCall.kind !== 'fetch') {
     // ACP locations use the class of the operation as well as path(s). Never
     // ask the user to override the DSH sandbox for a command or unknown action.
     if (toolCall.kind !== 'read' && !(policy.mode === 'workspace-write' && ['edit', 'delete'].includes(toolCall.kind))) return selected(deny);
@@ -135,14 +137,21 @@ async function permission(ctx, agent, params, signal) {
     for (const subject of paths) {
       if (!await withinWorkspace(subject, policy.cwd, policy.workspaceRoot)) return selected(deny);
     }
-  } else if (policy.mode !== 'review') return selected(deny);
+  } else if (!restricted && policy.mode !== 'review') return selected(deny);
   if (signal.aborted) return cancelledPermission;
   if (!samePolicy()) return selected(deny);
+  // Never grants only an already in-scope operation; it never escalates the
+  // sandbox or persists a broader ACP permission. DSH 'never' rejects asks.
+  if (restricted && policy.approvalPolicy === 'never') return selected(allow);
   const reason = String(toolCall.title ?? toolCall.kind ?? '工具操作').replace(/[\p{Cc}\p{Cf}]/gu, ' ').slice(0, 1000);
   const approvalSignal = AbortSignal.any([signal, AbortSignal.timeout(120_000)]);
   const outcome = await policy.approval.request({ agent, toolName: 'Google Antigravity', reason, signal: approvalSignal });
   if (signal.aborted) return cancelledPermission;
-  return selected(outcome === 'allowed-once' && !approvalSignal.aborted && samePolicy() ? allow : deny);
+  if (approvalSignal.aborted || !samePolicy()) return selected(deny);
+  // Current Desktop only returns allowed-once. Never promote a one-shot
+  // decision to a persistent ACP grant merely because the peer offers it.
+  if (outcome === 'allowed-always') return selected(restricted ? allow : always ?? allow);
+  return selected(outcome === 'allowed-once' ? allow ?? deny : deny);
 }
 
 /** Install an ordinary DSH adapter; it owns the ACP process, not the chat surface. */
@@ -189,7 +198,7 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
     returns.cancel(id);
     for (const [key, ticket] of returnTickets) if (ticket.agent.id === id || ticket.childId === id) revokeReturn(key, ticket);
   }
-  const allowedMcp = config.mcp ?? ['knowledge', 'windows', 'playwright', 'remote'];
+  const allowedMcp = config.mcp;
   let catalog, images = false, loading, authInFlight;
   let status = 'unchecked';
   let failedAt = -Infinity;
@@ -393,32 +402,38 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
             : status === 'ready' ? 'model-unavailable' : 'connection-failed';
           throw asLocalError({ code });
         }
-        const { cwd, mode } = executionPolicy(agent, ctx);
+        const { cwd, mode, approvalPolicy, workspaceRoot } = executionPolicy(agent, ctx);
         watchSilence = mode !== 'full';
         chat.permissionActivity = activity;
         const preset = composedPreset(ctx, agent);
-        const persona = preset === WRITING_PRESET ? WRITING_PERSONA : undefined;
+        const currentPersona = selectedPreset => selectedPreset === WRITING_PRESET ? WRITING_PERSONA
+          : resolveAgyPresetPersona(agent.ctx, { provider: GOOGLE, model: request.model });
+        const persona = currentPersona(preset);
         if (!isLocalAgyPath(cwd) || !(await stat(cwd).catch(() => undefined))?.isDirectory()) throw Object.assign(new Error('Invalid cwd'), { code: 'workspace-unavailable' });
         const samePolicy = () => {
           const current = executionPolicy(agent, ctx);
-          return current.mode === mode && current.cwd === cwd && composedPreset(ctx, agent) === preset;
+          return current.mode === mode && current.approvalPolicy === approvalPolicy && current.workspaceRoot === workspaceRoot
+            && current.cwd === cwd && composedPreset(ctx, agent) === preset && currentPersona(preset) === persona;
         };
         const blocks = await localPrompt(messages.flatMap(message => message.content), ctx.get('attachments'), turnSignal);
         const toolsService = ctx.get('tools');
-        const allowBridge = ['full', 'review'].includes(mode);
-        // Child output is data to review, not authorization for another action.
-        const useMcp = !reviewOnly && toolsService && allowedMcp.length && allowBridge;
+        // Native tools keep their own policies; sandbox mode isn't a tool allowlist.
+        // A GPT return cannot turn into another tool or delegation round.
+        const useMcp = !reviewOnly && toolsService && allowedMcp?.length !== 0;
         if (useMcp) toolSet = await toolsService.resolve({ agent, signal: turnSignal, modelSelection: {
           provider: GOOGLE, model: request.model, reasoningEffort: request.reasoningEffort,
         } });
         const tools = useMcp ? agyMcpTools(ctx, agent, toolSet, allowedMcp) : new Map();
         const fromOwnerPrompt = messages.some(message => typeof message.source?.rpcId === 'string' && !returnIdOf(message));
-        const builtinTools = !reviewOnly && allowBridge && config.gptBridge !== false
-          ? agyGptBridgeTools(ctx, { notify: fromOwnerPrompt ? returns.watch : undefined, cancelReturns }) : new Map();
+        const builtinTools = !reviewOnly && config.gptBridge !== false
+          ? agyGptBridgeTools(ctx, { notify: fromOwnerPrompt ? returns.watch : undefined, cancelReturns,
+            restriction: ['workspace-write', 'read-only'].includes(mode) ? { mode, cwd, workspaceRoot, approvalPolicy, samePolicy } : undefined }) : new Map();
         let dispatched = false;
         const mcpTurn = { agent, tools, builtinTools, toolSet, signal: acpSignal, canCall: () => dispatched && samePolicy() };
-        const routeKey = JSON.stringify([mode, preset, persona, [...tools.keys(), ...builtinTools.keys()].sort()]);
-        if (chat.session && (!chat.session.options || chat.routeKey !== routeKey || !sameAgyPath(chat.cwd, cwd))) await closeChat(chat);
+        const workspaceFingerprint = await runtime.workspaceFingerprint?.(cwd, turnSignal);
+        const routeKey = fingerprint => JSON.stringify([mode, approvalPolicy, workspaceRoot, preset, persona, fingerprint,
+          [...tools.keys(), ...builtinTools.keys()].sort()]);
+        if (chat.session && (!chat.session.options || chat.routeKey !== routeKey(workspaceFingerprint) || !sameAgyPath(chat.cwd, cwd))) await closeChat(chat);
         const createdAt = agent.session.header.createdAt;
         const stored = chat.binding ?? await runtime.readBinding?.(id);
         const binding = stored?.createdAt === createdAt ? stored : undefined;
@@ -442,7 +457,7 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
           chat.session ??= await open();
           chat.resumeSteeredId = undefined;
           chat.cwd = cwd;
-          chat.routeKey = routeKey;
+          chat.routeKey = routeKey(chat.session.workspaceFingerprint ?? workspaceFingerprint);
           chat.binding = { createdAt, cwd, officialId: chat.session.id, throughTurn, ...(persona ? { persona } : {}) };
           if (chat.session.id) await runtime.writeBinding?.(id, chat.binding);
         } else chat.bridge?.setTurn(mcpTurn);
@@ -493,7 +508,7 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
         if (signal.aborted) throw signal.reason;
         if (stall.signal.aborted && !steer.signal.aborted) {
           await settleSteer();
-          throw new LlmError('Google Antigravity 长时间没有进展，本轮已取消。若任务需要终端或 MCP，请切到「完全权限 + 需确认」。', 'AGY_NO_PROGRESS');
+          throw new LlmError('Google Antigravity 长时间没有进展，本轮已取消。若任务需要 Gemini 直接执行终端命令，请切到「完全权限 + 需确认」。', 'AGY_NO_PROGRESS');
         }
         if (!steer.signal.aborted) {
           await closeChat(chat);

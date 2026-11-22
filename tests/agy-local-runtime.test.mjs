@@ -74,8 +74,14 @@ test('automatic Google proxy reads the upstream subscriptions JSON contract and 
   });
   assert.deepEqual(await agyProxyEnv('direct', parent, os), {});
   assert.equal((await agyProxyEnv('explicit.invalid:9000', parent, os)).HTTPS_PROXY, 'http://explicit.invalid:9000');
+  for (const scheme of ['socks5', 'socks5h']) {
+    await writeFile(file, JSON.stringify({ ...upstream, url: `${scheme}://fixture.invalid:1080` }));
+    const proxy = `${scheme}://spaced%20user:p%40ss%3Aword@fixture.invalid:1080`;
+    assert.deepEqual(await agyProxyEnv('auto', parent, os), { HTTPS_PROXY: proxy, HTTP_PROXY: proxy,
+      NO_PROXY: 'localhost,127.0.0.1,::1,.proxy-bypass.invalid,*.child.invalid,exact.invalid' });
+  }
   for (const text of ['not JSON', 'null', JSON.stringify({ ...upstream, enabled: false }),
-    JSON.stringify({ ...upstream, url: 'socks5://unsupported.invalid:1234' })]) {
+    JSON.stringify({ ...upstream, url: 'ftp://unsupported.invalid:1234' })]) {
     await writeFile(file, text);
     assert.equal((await agyProxyEnv('auto', parent, os)).HTTPS_PROXY, 'http://env.invalid:8000');
     assert.equal((await agyProxyEnv('auto', { DSH_HOME: root }, os)).HTTPS_PROXY, 'http://127.0.0.1:8123');
@@ -271,7 +277,7 @@ test('real cwd, stable home and official ID survive CLI upgrade and policy chang
     allowNonWorkspaceAccess: true, enableTerminalSandbox: false });
   const rules = () => readFile(join(home, '.gemini', 'GEMINI.md'), 'utf8');
   await runtime.dispose();
-  assert.equal(await rules(), '# Synthetic local rules\n\n合成写作人设');
+  assert.equal(await rules(), '## Global instructions (AGENTS.md)\n\n# Synthetic local rules\n\n合成写作人设');
 
   runtime = createLocalAgy({ dataDir, agentsFile }, dependencies);
   assert.deepEqual(await runtime.readBinding(id), binding);
@@ -279,17 +285,18 @@ test('real cwd, stable home and official ID survive CLI upgrade and policy chang
   assert.equal(reopened.id, officialId);
   assert.equal(spawns[1].env.HOME, home);
   assert.equal(spawns[1].permissionMode, 'sandbox');
-  assert.equal(await rules(), '# Synthetic local rules', 'ordinary mode removes writing persona while preserving global rules');
-  const deny = ['command(*)', 'unsandboxed(*)', 'mcp(*)', 'read_url(*)', 'execute_url(*)'];
+  assert.equal(await rules(), '## Global instructions (AGENTS.md)\n\n# Synthetic local rules', 'ordinary mode removes persona while preserving global rules');
+  const deny = ['command(*)', 'unsandboxed(*)', 'execute_url(*)'];
+  const allow = ['mcp(dsh/*)'];
   assert.deepEqual(await settings(), { useG1Credits: false, agentMode: '', toolPermission: 'request-review',
-    allowNonWorkspaceAccess: false, enableTerminalSandbox: true, permissions: { deny: [...deny, 'write_file(*)'] } });
+    allowNonWorkspaceAccess: false, enableTerminalSandbox: true, permissions: { deny: [...deny, 'write_file(*)'], allow } });
   assert.deepEqual(calls, [{ method: 'session/new', params: { cwd: root, mcpServers: [] } },
     { method: 'session/load', params: { cwd: root, mcpServers: [], sessionId: officialId } }]);
   await reopened.close();
   await runtime.open(signal, { id, cwd: root, mode: 'workspace-write', officialId });
   assert.equal(spawns[2].permissionMode, 'sandbox');
   assert.deepEqual(await settings(), { useG1Credits: false, agentMode: '', toolPermission: 'request-review',
-    allowNonWorkspaceAccess: false, enableTerminalSandbox: true, permissions: { deny, ask: ['write_file(*)'] } });
+    allowNonWorkspaceAccess: false, enableTerminalSandbox: true, permissions: { deny, allow, ask: ['write_file(*)'] } });
   await runtime.dispose();
 });
 
@@ -348,6 +355,124 @@ test('private CLI homes copy user DSH skills with resources; refresh updates and
   await talk('first');
   await assert.rejects(lstat(join(first, 'bundle')), { code: 'ENOENT' });
   await runtime.dispose();
+});
+
+test('cwd context merges ordinary local rules and skills, and fingerprints only effective inputs', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-agy-workspace-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const cwd = join(root, 'project'), elsewhere = join(root, 'other-project'), outside = join(root, 'outside');
+  const dshHome = join(root, 'dsh-home'), global = join(dshHome, 'skills'), dataDir = join(root, 'runtime');
+  const localDsh = join(cwd, '.dsh'), local = join(localDsh, 'skills'), localBundle = join(local, 'bundle');
+  const globalRules = join(dshHome, 'AGENTS.md'), localRules = join(cwd, 'AGENTS.md');
+  for (const dir of [join(localBundle, 'references'), join(localBundle, '.git'), join(global, 'SHARED'), join(outside, 'skills'), elsewhere]) {
+    await mkdir(dir, { recursive: true });
+  }
+  const write = (dir, name, value) => writeFile(join(dir, name), value);
+  await writeFile(globalRules, 'global rules');
+  await writeFile(localRules, 'local rules');
+  await write(root, 'AGENTS.md', 'not a direct cwd file');
+  await write(outside, 'SKILL.md', 'outside skill');
+  await write(join(outside, 'skills'), 'outside-flat.md', 'outside flat skill');
+  await write(outside, 'AGENTS.md', 'outside rules');
+  await write(global, 'only-global.md', 'global flat');
+  await write(join(global, 'SHARED'), 'SKILL.md', 'shadowed global directory');
+  await write(join(global, 'SHARED'), 'asset.txt', 'never merge shadowed resources');
+  await write(local, 'shared.md', 'workspace flat shadows a global directory');
+  await write(local, 'bundle.md', 'workspace flat loses to workspace directory');
+  await write(localBundle, 'SKILL.md', 'workspace directory');
+  await write(join(localBundle, '.git'), 'config', 'excluded');
+  const resource = join(localBundle, 'references', 'notes.md');
+  await writeFile(resource, 'original resource');
+  await symlink(outside, join(local, 'linked-skill'), 'junction');
+  await symlink(outside, join(localBundle, 'linked-assets'), 'junction');
+  await symlink(outside, join(elsewhere, '.dsh'), 'junction');
+  const alias = join(root, 'alias');
+  await symlink(cwd, alias, 'junction');
+  let linkedRules = true;
+  try { await symlink(join(outside, 'AGENTS.md'), join(elsewhere, 'AGENTS.md'), 'file'); }
+  catch (error) {
+    if (error.code !== 'EPERM') throw error;
+    linkedRules = false;
+    await mkdir(join(elsewhere, 'AGENTS.md'));
+  }
+  const spawns = [];
+  const runtime = createLocalAgy({ dataDir, agentsFile: globalRules }, {
+    parentEnv: { DSH_HOME: dshHome, SystemRoot: process.env.SystemRoot ?? root },
+    verify: () => join(root, 'agy.exe'), resolveProxy: () => ({}), makeTransport(options) {
+      spawns.push(options);
+      return { start: async () => ({}), close: async () => {},
+        async request() { return { sessionId: randomUUID(), configOptions: [{ type: 'select', name: 'Model', id: 'model',
+          category: 'model', currentValue: 'fixture', options: [{ value: 'fixture', name: 'Fixture' }] }] }; } };
+    },
+  });
+  t.after(() => runtime.dispose());
+  const open = (dir, id) => runtime.open(signal, { id, cwd: dir, persona: 'preset persona' });
+  const output = (...parts) => join(spawns.at(-1).env.HOME, '.gemini', ...parts);
+  const rules = () => readFile(output('GEMINI.md'), 'utf8');
+  const skills = (...parts) => output('antigravity-cli', 'skills', ...parts);
+  const missing = path => assert.rejects(lstat(path), { code: 'ENOENT' });
+  const fingerprint = await runtime.workspaceFingerprint(cwd, signal);
+  assert.match(fingerprint, /^[a-f0-9]{64}$/u);
+  assert.equal(spawns.length, 0);
+  await missing(dataDir);
+  await write(root, 'AGENTS.md', 'edited outside of direct cwd');
+  await write(join(global, 'SHARED'), 'SKILL.md', 'edited shadowed skill');
+  await write(join(localBundle, '.git'), 'ignored', 'unpublished metadata');
+  await write(outside, 'SKILL.md', 'different linked target');
+  assert.equal(await runtime.workspaceFingerprint(cwd), fingerprint);
+  await assert.rejects(runtime.workspaceFingerprint(cwd, AbortSignal.abort()), { name: 'AbortError' });
+  const catalog = await runtime.open(signal);
+  assert.equal(catalog.workspaceFingerprint, undefined);
+  assert.equal(await rules(), '');
+  await missing(skills());
+  await catalog.close();
+
+  const session = await open(cwd, 'workspace');
+  assert.equal(session.workspaceFingerprint, fingerprint);
+  const globalSection = '## Global instructions (AGENTS.md)';
+  const workspaceSection = '## Workspace instructions (AGENTS.md)';
+  assert.equal(await rules(), `${globalSection}\n\nglobal rules\n\n${workspaceSection}\n\nlocal rules\n\npreset persona`);
+  assert.equal(await readFile(skills('shared', 'SKILL.md'), 'utf8'), 'workspace flat shadows a global directory');
+  assert.equal(await readFile(skills('only-global', 'SKILL.md'), 'utf8'), 'global flat');
+  assert.equal(await readFile(skills('bundle', 'SKILL.md'), 'utf8'), 'workspace directory');
+  assert.equal(await readFile(skills('bundle', 'references', 'notes.md'), 'utf8'), 'original resource');
+  for (const path of [skills('shared', 'asset.txt'), skills('linked-skill'), skills('bundle', 'linked-assets'), skills('bundle', '.git')]) {
+    await missing(path);
+  }
+  await session.close();
+
+  await writeFile(resource, 'different resource length');
+  const resourceChanged = await runtime.workspaceFingerprint(cwd);
+  assert.notEqual(resourceChanged, fingerprint);
+  await writeFile(localRules, 'updated local rules');
+  const rulesChanged = await runtime.workspaceFingerprint(cwd);
+  assert.notEqual(rulesChanged, resourceChanged);
+  await writeFile(globalRules, 'updated global rules');
+  assert.notEqual(await runtime.workspaceFingerprint(cwd), rulesChanged);
+  await rm(join(local, 'shared.md'));
+  const revealed = await runtime.workspaceFingerprint(cwd);
+  const refreshed = await open(cwd, 'workspace');
+  assert.equal(refreshed.workspaceFingerprint, revealed);
+  assert.equal(await rules(), `${globalSection}\n\nupdated global rules\n\n${workspaceSection}\n\nupdated local rules\n\npreset persona`);
+  assert.equal(await readFile(skills('SHARED', 'SKILL.md'), 'utf8'), 'edited shadowed skill');
+  assert.equal(await readFile(skills('bundle', 'references', 'notes.md'), 'utf8'), 'different resource length');
+  await refreshed.close();
+
+  for (const dir of [elsewhere, alias]) {
+    const unmerged = await open(dir, 'workspace');
+    assert.equal(unmerged.workspaceFingerprint, await runtime.workspaceFingerprint(dir));
+    assert.equal(await rules(), `${globalSection}\n\nupdated global rules\n\npreset persona`);
+    await missing(skills('bundle'));
+    await missing(skills('outside-flat'));
+    await unmerged.close();
+  }
+  assert.equal(spawns.at(-1).cwd, cwd, 'the CLI still launches in the canonical cwd');
+  await rename(globalRules, join(dshHome, 'AGENTS.fixture'));
+  const workspaceOnly = await open(cwd, 'workspace');
+  assert.equal(await rules(), `${workspaceSection}\n\nupdated local rules\n\npreset persona`);
+  assert.equal(workspaceOnly.workspaceFingerprint, await runtime.workspaceFingerprint(cwd));
+  await workspaceOnly.close();
+  if (!linkedRules) t.diagnostic('File symlink creation requires Windows privileges; tested a non-ordinary AGENTS directory instead.');
 });
 
 test('ACP input keeps text over 64 KiB, attachment links, and verified image bytes in order', async () => {

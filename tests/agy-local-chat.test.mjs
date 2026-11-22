@@ -14,12 +14,13 @@ const calls = h => h.acpCalls.filter(row => row.method === 'session/prompt');
 const end = (h, id) => h.events(id).findLast(e => e.type === 'turn/end')?.data.reason;
 
 async function fixture(t, options) {
-  const { bindings = new Map(), opened = [], catalogProbe, ...settings } = options;
+  const { bindings = new Map(), opened = [], catalogProbe, workspaceFingerprint, ...settings } = options;
   let google;
   const h = await createTurnHost(t, { releasedReader: true, withCompaction: true, withRetry: true, desktopRequests: true,
     ...settings, async mountSubscription({ scope, makeSession }) {
       const sessions = new Set();
       google = mountLocalGoogle(scope, {}, {
+        workspaceFingerprint,
         async open(signal, { cwd, officialId, mode, persona, mcpServers, onPermission } = {}) {
           opened.push({ officialId, mode, persona });
           if (!mode) await catalogProbe?.();
@@ -84,11 +85,18 @@ test('native send retains last-known model admission and reprobes within the coo
   assert.equal(calls(h).length, 1);
 });
 
-for (const [mode, kind, relativePaths, decision, expected] of [
+for (const [mode, kind, relativePaths, decision, expected, approval = 'ask', native = true, offerAlways = true] of [
   ['workspace-write', 'edit', ['note.txt'], 'allowed-once', 'allow'],
   ['workspace-write', 'edit', ['note.txt'], 'rejected', 'deny'],
   ['workspace-write', 'edit', ['note.txt', '../outside.txt'], undefined, 'deny'],
   ['workspace-write', 'execute', [], undefined, 'deny'],
+  ['workspace-write', 'edit', ['note.txt'], undefined, 'allow', 'never'],
+  ['workspace-write', 'edit', ['../outside.txt'], undefined, 'deny', 'never'],
+  ['workspace-write', 'fetch', [], undefined, 'allow', 'never'],
+  ['read-only', 'read', ['note.txt'], undefined, 'allow', 'never'],
+  ['read-only', 'edit', ['note.txt'], undefined, 'deny', 'never'],
+  ['danger-full-access', 'execute', [], 'allowed-always', 'always', 'ask', false],
+  ['danger-full-access', 'execute', [], 'allowed-always', 'allow', 'ask', false, false],
   ['read-only', 'edit', ['note.txt'], undefined, 'deny'],
   ['read-only', 'read', ['note.txt'], 'allowed-once', 'allow'],
   ['danger-full-access', 'execute', [], 'rejected', 'deny'],
@@ -96,7 +104,7 @@ for (const [mode, kind, relativePaths, decision, expected] of [
   test(`ACP ${mode} ${kind} ${relativePaths.join(', ')} ${decision ?? 'is blocked'}`, { timeout: 10_000 }, async t => {
     const requests = [], replies = [];
     let current;
-    const h = await fixture(t, { localPermissions: { mode, approval: 'ask', native: true, request(input) {
+    const h = await fixture(t, { localPermissions: { mode, approval, native, request(input) {
       requests.push(input);
       return decision ?? 'rejected';
     } }, apis: { onPermissionReply(id, response) {
@@ -105,7 +113,10 @@ for (const [mode, kind, relativePaths, decision, expected] of [
     } }, acpPrompt(turn) {
       current = turn;
       turn.ask('peer-permission', { toolCallId: 'fixture-tool', kind, title: 'Synthetic permission request',
-        locations: relativePaths.map(path => ({ path })) });
+        locations: relativePaths.map(path => ({ path })) }, [
+        { kind: 'allow_once', optionId: 'allow' }, { kind: 'reject_once', optionId: 'deny' },
+        ...(offerAlways ? [{ kind: 'allow_always', optionId: 'always' }] : []),
+      ]);
     } });
     const id = await h.create();
     ok(await h.select(id, selection));
@@ -114,12 +125,62 @@ for (const [mode, kind, relativePaths, decision, expected] of [
     const approvals = h.events(id).filter(row => row.type.startsWith('approval/'));
     assert.deepEqual(replies, [{ id: 'peer-permission', response: { outcome: { outcome: 'selected', optionId: expected } } }], JSON.stringify(approvals.map(row => row.data)));
     assert.equal(requests.length, decision ? 1 : 0, JSON.stringify(approvals.map(row => row.data)));
-    assert.deepEqual(approvals.map(row => row.type), decision ? ['approval/asked', 'approval/decided'] : []);
+    assert.deepEqual(approvals.map(row => row.type), native && decision ? ['approval/asked', 'approval/decided'] : []);
     if (decision) {
       assert.equal(requests[0].agent, h.agent(id));
       assert.equal(requests[0].toolName, 'Google Antigravity');
-      assert.equal(approvals.at(-1).data.outcome, decision);
+      if (native) assert.equal(approvals.at(-1).data.outcome, decision);
     }
+  });
+}
+
+test('workspace context changes reopen the same official conversation on the next message', async t => {
+  let fingerprint = 'first';
+  const h = await fixture(t, { workspaceFingerprint: async () => fingerprint });
+  const id = await h.create();
+  ok(await h.select(id, selection));
+  for (const text of ['before change', 'no change']) { ok(await h.prompt(id, text)); await h.idle(id); }
+  assert.equal(h.acpCalls.filter(row => row.method === 'session/load').length, 0);
+  fingerprint = 'changed';
+  ok(await h.prompt(id, 'after change'));
+  await h.idle(id);
+  assert.equal(h.acpCalls.filter(row => row.method === 'session/load').length, 1);
+  assert.equal(new Set(calls(h).map(row => row.params.sessionId)).size, 1);
+  assert.equal(calls(h).length, 3);
+});
+
+for (const mode of ['workspace-write', 'read-only']) {
+  test(`${mode} bridges custom MCP through the native tool guard`, async t => {
+    const prompt = Promise.withResolvers();
+    const h = await fixture(t, { localPermissions: { mode, approval: 'never' }, localMcpMarker: 'DSH allowed this tool',
+      acpPrompt(turn) { prompt.resolve(turn); } });
+    const remove = h.ctx.tools.guard(exec => exec.name === 'mcp__custom-server__fixture' ? 'synthetic native restriction' : undefined);
+    t.after(remove);
+    const id = await h.create();
+    ok(await h.select(id, selection));
+    ok(await h.prompt(id, 'synthetic MCP checks'));
+    const turn = await prompt.promise;
+    const server = h.acpCalls.findLast(row => row.method === 'session/new').params.mcpServers[0];
+    const rpc = async (method, params) => (await fetch(server.url, { method: 'POST', signal: t.signal,
+      headers: { authorization: server.headers[0].value }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })).json();
+    const { result } = await rpc('tools/list');
+    assert.ok(result.tools.some(tool => tool.name === 'mcp__custom-server__fixture'));
+    const denied = await rpc('tools/call', { name: 'mcp__custom-server__fixture' });
+    assert.match(JSON.stringify(denied), /synthetic native restriction/);
+    const allowed = await rpc('tools/call', { name: 'mcp__knowledge__dsh_integration_marker' });
+    assert.equal(allowed.result.content[0].text, 'DSH allowed this tool');
+    const child = await rpc('tools/call', { name: 'dsh_delegate_gpt', arguments: {
+      cwd: h.cwd, prompt: 'synthetic restricted delegation', notifyParent: false,
+      provider: ORDINARY_SELECTION.provider, model: ORDINARY_SELECTION.model,
+    } });
+    assert.equal(child.result.isError, false, JSON.stringify(child));
+    const { sessionId } = JSON.parse(child.result.content[0].text);
+    await h.idle(sessionId);
+    const events = h.events(sessionId);
+    assert.equal(events.findLast(row => row.type === 'sandbox/mode').data.mode, mode);
+    assert.equal(events.findLast(row => row.type === 'approval/policy').data.policy, 'never');
+    turn.update('checked'); turn.reply();
+    await h.idle(id);
   });
 }
 
@@ -298,7 +359,7 @@ test('a queued GPT result wakes exactly the owner Gemini session with its grante
   await h.idle(id);
   assert.equal(acpTurns, 2, JSON.stringify(end(h, id)));
   const returned = await review.promise;
-  assert.match(returned.params.prompt.at(-1).text, /完成回传[\s\S]*合成 DSH 回复 1/);
+  assert.equal(returned.params.prompt.at(-1).text, `[GPT 回传 · ${child.title}（本轮已结束）]\n\n合成 DSH 回复 1`);
   assert.deepEqual(opened.filter(row => row.mode).map(row => row.mode), ['full', 'full']);
   assert.deepEqual(h.acpCalls.filter(row => row.method === 'session/load').at(-1).params.mcpServers, [],
     'the review turn has neither delegation tools nor external MCP tools');

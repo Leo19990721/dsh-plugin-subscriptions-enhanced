@@ -23,7 +23,7 @@ async function subscriptionProxy(parent) {
     // This is the subscription plugin's on-disk record, not the redacted settings RPC view.
     if (saved?.enabled !== true || typeof saved.url !== 'string') return;
     const url = new URL(saved.url.trim());
-    if (!['http:', 'https:'].includes(url.protocol) || !url.hostname) return;
+    if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(url.protocol) || !url.hostname) return;
     if (typeof saved.username === 'string') url.username = saved.username.trim();
     if (typeof saved.password === 'string') url.password = saved.password;
     url.pathname = '/';

@@ -2,12 +2,12 @@ import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { mkdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
-import { delimiter, join, win32 } from 'node:path';
+import { delimiter, join, resolve, win32 } from 'node:path';
 import { AgyAcpClient } from './agy-acp-client.js';
-import { agyWindowsEnv, isLocalAgyPath, verifiedAgyExecutable } from './agy-launch.js';
+import { agyWindowsEnv, isLocalAgyPath, sameAgyPath, verifiedAgyExecutable } from './agy-launch.js';
 import { LOCAL_FRAME_BYTES } from './agy-local-context.js';
 import { agyProxyEnv } from './agy-local-proxy.js';
-import { dshHomePath, retireAgyLegacyBrowserCaches, syncAgySkills } from './agy-local-storage.js';
+import { dshHomePath, inventoryAgyWorkspace, readAgyRules, retireAgyLegacyBrowserCaches, syncAgySkills } from './agy-local-storage.js';
 import { isAgySessionId } from './agy-session.js';
 import { createAgyTurnSession } from './agy-turn-session.js';
 
@@ -17,10 +17,11 @@ const settingsFor = mode => ({
   toolPermission: mode === 'full' ? 'always-proceed' : 'request-review',
   allowNonWorkspaceAccess: mode === 'full' || mode === 'review',
   enableTerminalSandbox: mode === 'workspace-write' || mode === 'read-only',
-  // The agy terminal sandbox is not DSH's Windows ACL sandbox. In restricted
-  // modes do not dispatch native commands or external MCP outside DSH policy.
+  // The agy terminal sandbox is not DSH's Windows ACL sandbox. Restricted
+  // modes deny native commands; only the loopback bridge delegates approvals to DSH.
   ...(['workspace-write', 'read-only'].includes(mode) ? { permissions: {
-    deny: ['command(*)', 'unsandboxed(*)', 'mcp(*)', 'read_url(*)', 'execute_url(*)', ...(mode === 'read-only' ? ['write_file(*)'] : [])],
+    deny: ['command(*)', 'unsandboxed(*)', 'execute_url(*)', ...(mode === 'read-only' ? ['write_file(*)'] : [])],
+    allow: ['mcp(dsh/*)'],
     ...(mode === 'workspace-write' ? { ask: ['write_file(*)'] } : {}),
   } } : {}),
 });
@@ -91,10 +92,28 @@ export function createLocalAgy({ executable, proxy, dataDir, agentsFile } = {}, 
     return join(stateDir, id === undefined ? 'catalog' : stateKey(id));
   };
 
-  function refreshSkills(settingsDir, signal) {
-    const pending = (skillRefresh.get(settingsDir) ?? Promise.resolve()).catch(() => {}).then(() => {
-      signal.throwIfAborted();
-      return syncAgySkills(skillsSource, settingsDir).catch(() => { throw fault('skill-sync-failed'); });
+  const contextCwd = (requested, canonical) => sameAgyPath(resolve(requested), canonical) ? canonical : undefined;
+
+  async function workspaceInventory(cwd, signal) {
+    try { return await inventoryAgyWorkspace({ cwd, agentsFile, globalSkills: skillsSource, signal }); }
+    catch { signal?.throwIfAborted(); throw fault('skill-sync-failed'); }
+  }
+
+  async function workspaceFingerprint(cwd, signal) {
+    signal?.throwIfAborted();
+    if (disposed) throw fault('closed');
+    const canonical = await actualDirectory(cwd);
+    return (await workspaceInventory(contextCwd(cwd, canonical), signal)).fingerprint;
+  }
+
+  function materializeWorkspace(settingsDir, cwd, signal) {
+    const pending = (skillRefresh.get(settingsDir) ?? Promise.resolve()).catch(() => {}).then(async () => {
+      const inventory = await workspaceInventory(cwd, signal);
+      try {
+        const rules = await readAgyRules(inventory);
+        await syncAgySkills(inventory, settingsDir, signal);
+        return { rules, fingerprint: inventory.fingerprint };
+      } catch { signal.throwIfAborted(); throw fault('skill-sync-failed'); }
     }).finally(() => { if (skillRefresh.get(settingsDir) === pending) skillRefresh.delete(settingsDir); });
     skillRefresh.set(settingsDir, pending);
     return pending;
@@ -144,14 +163,10 @@ export function createLocalAgy({ executable, proxy, dataDir, agentsFile } = {}, 
     const isolatedWork = join(root, 'workspace');
     await Promise.all([...Object.values(areas), settingsDir, ...(catalog ? [isolatedWork] : [])].map(dir => mkdir(dir, { recursive: true })));
     const [cwd, proxies] = await Promise.all([actualDirectory(catalog ? isolatedWork : requestedCwd), resolveProxy(proxy, parentEnv)]);
-    if (!catalog) await refreshSkills(settingsDir, signal);
-    const rules = !catalog && agentsFile ? await readFile(agentsFile, 'utf8').catch(error => {
-      if (!missing(error)) throw error;
-      return '';
-    }) : '';
+    const workspace = catalog ? undefined : await materializeWorkspace(settingsDir, contextCwd(requestedCwd, cwd), signal);
     await Promise.all([
       writeFile(join(settingsDir, 'settings.json'), JSON.stringify(settingsFor(mode))),
-      writeFile(join(geminiDir, 'GEMINI.md'), [rules, !catalog && persona].filter(Boolean).join('\n\n')),
+      writeFile(join(geminiDir, 'GEMINI.md'), [...(workspace?.rules ?? []), !catalog && persona].filter(Boolean).join('\n\n')),
     ]);
     const env = childEnv(areas, proxies);
     signal.throwIfAborted();
@@ -181,7 +196,7 @@ export function createLocalAgy({ executable, proxy, dataDir, agentsFile } = {}, 
       if (disposed || closing) throw fault('closed');
       if (!session.options) throw fault('catalog-unavailable');
       return { id: session.id, get options() { return session.options; }, get capabilities() { return session.capabilities; },
-        prepare: session.prepare, runTurn: session.runTurn, close };
+        workspaceFingerprint: workspace?.fingerprint, prepare: session.prepare, runTurn: session.runTurn, close };
     } catch (error) {
       await close();
       throw error;
@@ -265,7 +280,7 @@ export function createLocalAgy({ executable, proxy, dataDir, agentsFile } = {}, 
   const logout = signal => runAuthAction(signal, 'logout');
   const historyArchivePath = id => id === undefined ? undefined : join(directory(id), 'dsh-history-archive.md');
 
-  return Object.freeze({ open, readBinding, writeBinding, historyArchivePath, authenticate, logout, fetchQuota, async dispose() {
+  return Object.freeze({ open, workspaceFingerprint, readBinding, writeBinding, historyArchivePath, authenticate, logout, fetchQuota, async dispose() {
     disposed = true;
     await Promise.allSettled([...sessions].map(close => close()));
   } });

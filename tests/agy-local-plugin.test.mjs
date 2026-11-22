@@ -16,7 +16,10 @@ test('Remote bridge only exposes tools in the current session tool set', () => {
     return available;
   } } };
   assert.equal(agyMcpTools(ctx, agent, toolSet, ['remote']).size, 0);
-  available = [knowledge, remote];
+  const custom = { name: 'mcp__my-server__read' };
+  available = [knowledge, remote, custom, { name: 'pwsh' }];
+  assert.deepEqual([...agyMcpTools(ctx, agent, toolSet).keys()], [knowledge.name, remote.name, custom.name]);
+  assert.deepEqual([...agyMcpTools(ctx, agent, toolSet, ['my-server']).keys()], [custom.name]);
   assert.deepEqual([...agyMcpTools(ctx, agent, toolSet, ['remote'])], [[remote.name, remote]]);
   assert.deepEqual([...agyMcpTools(ctx, agent, toolSet, ['knowledge'])], [[knowledge.name, knowledge]]);
   assert.equal(agyMcpTools(ctx, agent, toolSet, []).size, 0);
