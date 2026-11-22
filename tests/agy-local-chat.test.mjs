@@ -126,12 +126,14 @@ test('stock DSH chat switches to Gemini and streams two turns in the same ACP co
   assert.doesNotMatch(calls(h)[2].params.prompt[0].text, /之前在普通模型聊的话|同一聊天的下一轮/);
 });
 
-test('a queued GPT result wakes exactly the owner Gemini session with no delegation tools', { timeout: 10_000 }, async t => {
+test('a queued GPT result wakes exactly the owner Gemini session with its granted mode and no MCP tools', { timeout: 10_000 }, async t => {
   const first = Promise.withResolvers(), review = Promise.withResolvers(), childRelease = Promise.withResolvers();
   const opened = [];
   t.after(() => childRelease.resolve());
   let acpTurns = 0;
-  const h = await fixture(t, { opened, localPermissions: {}, ordinaryPrompt: () => childRelease.promise,
+  const mcpMarker = 'synthetic MCP result';
+  const h = await fixture(t, { opened, localPermissions: { mode: 'danger-full-access', approval: 'never' },
+    localMcpMarker: mcpMarker, ordinaryPrompt: () => childRelease.promise,
     acpPrompt(turn) {
       if (++acpTurns === 1) first.resolve(turn);
       else { turn.update('已验收'); turn.reply(); review.resolve(turn); }
@@ -147,10 +149,11 @@ test('a queued GPT result wakes exactly the owner Gemini session with no delegat
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) });
     const { result } = await res.json();
     assert.equal(result.isError, false, JSON.stringify(result));
-    return JSON.parse(result.content[0].text);
+    return result.content[0].text;
   };
-  const child = await tool('dsh_delegate_gpt', { prompt: '做一项合成任务', cwd: h.cwd,
-    provider: ORDINARY_SELECTION.provider, model: ORDINARY_SELECTION.model });
+  assert.equal(await tool('mcp__knowledge__dsh_integration_marker', {}), mcpMarker);
+  const child = JSON.parse(await tool('dsh_delegate_gpt', { prompt: '做一项合成任务', cwd: h.cwd,
+    provider: ORDINARY_SELECTION.provider, model: ORDINARY_SELECTION.model }));
   assert.equal(child.notifyParent, true);
   childRelease.resolve();
   await h.idle(child.sessionId);
@@ -164,8 +167,9 @@ test('a queued GPT result wakes exactly the owner Gemini session with no delegat
   assert.equal(acpTurns, 2, JSON.stringify(end(h, id)));
   const returned = await review.promise;
   assert.match(returned.params.prompt.at(-1).text, /完成回传[\s\S]*合成 DSH 回复 1/);
-  assert.deepEqual(opened.filter(row => row.mode).map(row => row.mode), ['full', 'read-only']);
-  assert.equal(h.acpCalls.filter(row => row.method === 'session/load').at(-1).params.mcpServers.length, 0);
+  assert.deepEqual(opened.filter(row => row.mode).map(row => row.mode), ['full', 'full']);
+  assert.deepEqual(h.acpCalls.filter(row => row.method === 'session/load').at(-1).params.mcpServers, [],
+    'the review turn has neither delegation tools nor external MCP tools');
   h.agent(id).followup(queued); // a copied message id/source must not grant a second call
   await h.idle(id);
   assert.equal(calls(h).length, 2);

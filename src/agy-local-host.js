@@ -316,14 +316,13 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
             : status === 'ready' ? 'model-unavailable' : 'connection-failed';
           throw asLocalError({ code });
         }
-        const { cwd, mode: grantedMode } = executionPolicy(agent, ctx);
-        const mode = reviewOnly ? 'read-only' : grantedMode;
+        const { cwd, mode } = executionPolicy(agent, ctx);
         const preset = composedPreset(ctx, agent);
         const persona = preset === WRITING_PRESET ? WRITING_PERSONA : undefined;
         if (!isLocalAgyPath(cwd) || !(await stat(cwd).catch(() => undefined))?.isDirectory()) throw Object.assign(new Error('Invalid cwd'), { code: 'workspace-unavailable' });
         const samePolicy = () => {
           const current = executionPolicy(agent, ctx);
-          return current.mode === grantedMode && current.cwd === cwd && composedPreset(ctx, agent) === preset;
+          return current.mode === mode && current.cwd === cwd && composedPreset(ctx, agent) === preset;
         };
         const blocks = await localPrompt(messages.flatMap(message => message.content), ctx.get('attachments'), signal);
         const toolsService = ctx.get('tools');

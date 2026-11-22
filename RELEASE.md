@@ -1,5 +1,9 @@
 # Subscriptions Enhanced
 
+## 0.3.4
+
+- GPT 自动回传后的 Gemini 验收轮沿用当前会话的本机命令权限，仍不提供派活工具或外部 MCP，且回传凭证只可使用一次。
+
 ## 0.3.3
 
 - 选用已连接的 Google Antigravity 时，聊天输入框底部显示同款「订阅用量」胶囊，不与 Codex 胶囊重复。弹层按模型组展示剩余额度和本地重置时间，Gemini 组优先；也可查看查询时间和剩余 credits。
