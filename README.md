@@ -4,7 +4,7 @@
 
 ## 在 DSH 用本机 Gemini 干活
 
-自 `0.3.0` 起不再声明 `engines.dsh`，保留对 DSH 接口包的 peer 依赖。已验证的环境为 Windows DSH Desktop `0.2.2-rc.5` 和 Google 官方 Antigravity CLI `1.5.12`（x64）。在原来的聊天模型菜单或 `/model` 里选 **Google Antigravity → Gemini**，不用换预设或另开会话。仍只走[官方 `agy acp`](https://antigravity.google/docs/ide/extensions/acp/)，没有旧私有直连备用通道。
+自 `0.3.5` 起，DSH 接口包的 peer 依赖不设版本区间，本机 `agy.exe` 也不再限定版本或文件摘要。请使用从 Google 安装的 Windows x64 CLI；运行时仍检查本机路径和 ACP 协议。在原来的聊天模型菜单或 `/model` 里选 **Google Antigravity → Gemini**，不用换预设或另开会话。仍只走[官方 `agy acp`](https://antigravity.google/docs/ide/extensions/acp/)，没有旧私有直连备用通道。
 
 - **工作目录和工具**：使用当前会话的实际工作目录，包含 DSH 已提交的目录变更。DSH「完全权限／无需审批」时，`agy` 按本机权限读写文件、跑命令、联网；完全权限但要求审批时，ACP 的确认请求交给 DSH。受限模式不会放开终端和 MCP（`agy` 的终端沙箱不等同于 DSH 沙箱）。只读模式不写文件；工作区写入模式下，工作区内的 `agy` 编辑由 DSH 审批。
 - **进度和附件**：实时思考片段、工具名、运行状态及可用的短结果都能在原生「思考」折叠项里看；工具只由 `agy` 执行一次。拖入图片会发送图像；普通附件按 DSH 的实际存储路径交给 `agy` 按需读取，粘贴文件路径也可以。去掉旧版 64 KiB 文本门槛，仍受 DSH 附件限制、ACP 单帧 16 MiB 上限及模型上下文限制。
@@ -27,7 +27,7 @@
 
 ## 安装已发布版本
 
-本节用于已发布的稳定版本。`0.3.0` 不声明 `engines.dsh`；安装器仍会检查 DSH 接口包的 peer 依赖。`0.2.9` 起包名为 `dsh-subscriptions-enhanced`。从本仓库 [Releases](https://github.com/Leo19990721/dsh-plugin-subscriptions-enhanced/releases) 下载正式 `.tgz`，在 DSH 原生插件管理器填写安装包绝对路径或下载 URL。
+本节用于已发布的稳定版本。`0.3.5` 不声明 `engines.dsh`，也不限制 DSH 接口包的 peer 版本。`0.2.9` 起包名为 `dsh-subscriptions-enhanced`。从本仓库 [Releases](https://github.com/Leo19990721/dsh-plugin-subscriptions-enhanced/releases) 下载正式 `.tgz`，在 DSH 原生插件管理器填写安装包绝对路径或下载 URL。
 
 从旧名 `dsh-plugin-subscriptions-enhanced` 换装时，先保留旧安装包。装好新版后，关闭安装完成页，先别点「立即启用」。等正在使用订阅模型的任务结束，在「插件」页卸载旧名的**订阅增强**，再启用新包。到「设置 → 模型」核对原有账号。启用失败可关闭新包后重新安装旧包。旧名和新名是两个第三方插件包，不要同时启用。
 
@@ -43,6 +43,6 @@
 
 ## 开发
 
-Node.js 24、pnpm。执行 `pnpm install --ignore-scripts`、`pnpm build`、`pnpm test`。构建固定上游并核对 Host/Client SHA-256。Desktop 集成测试使用已安装的 Electron Node 模式读取 ASAR；合成测试不需要真实账号或模型连接。
+Node.js 24、pnpm。执行 `pnpm install --ignore-scripts`、`pnpm build`、`pnpm test`。构建检查上游 Host/Client 的实际补丁接点，并记录输入版本和 SHA-256。Desktop 集成测试使用已安装的 Electron Node 模式读取 ASAR；合成测试不需要真实账号或模型连接。
 
 Windows 执行 `pwsh -NoProfile -File scripts/pack.ps1` 自动构建、测试和打包。`-NodePath`、`-PnpmPath` 可指定已安装的运行时。产物在 `.local-install`。安装包不包含 CLI 可执行文件、密钥、登录缓存或聊天记录。原作者版权及修改见 [LICENSE](./LICENSE) 和 [NOTICE](./NOTICE)。

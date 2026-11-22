@@ -3,7 +3,7 @@ import { existsSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm';
 import { AgyAcpClient, AgyAcpErrorCode } from './agy-acp-client.js';
-import { AGY_WINDOWS_X64, agyWindowsEnv, isLocalAgyPath, sameAgyPath, verifiedAgyExecutable } from './agy-launch.js';
+import { agyWindowsEnv, isLocalAgyPath, sameAgyPath, verifiedAgyExecutable } from './agy-launch.js';
 import { assertAgyNativeTurnHost, mountAgyNativeTurnHost } from './agy-native-turn-host.js';
 import { openAgyTurnLedger } from './agy-turn-ledger.js';
 import { createAgyTurnSession } from './agy-turn-session.js';
@@ -14,7 +14,7 @@ const model = 'select-antigravity';
 const modelName = '请在模型菜单选择 Antigravity';
 const safeCodes = new Set([
   'invalid-config', 'unsafe-host', 'workspace-mismatch', 'catalog-unavailable', 'cleanup-unconfirmed',
-  'unsupported-cli', 'unverified-cli', 'missing-cli', 'invalid-environment', 'cli-version-unavailable',
+  'unsupported-cli', 'missing-cli', 'invalid-environment',
   'invalid-session', 'config-unconfirmed', 'closed', 'host-unavailable', 'ready-unavailable', 'native-turn-required',
   ...Object.values(AgyAcpErrorCode).filter(code => typeof code === 'string'),
 ]);
@@ -108,7 +108,6 @@ export async function apply(ctx, config) {
       || !isLocalAgyPath(process.env.DSH_HOME) || !encloses(root, process.env.DSH_HOME)) {
       throw failure('unsafe-host');
     }
-    if (AGY_WINDOWS_X64.version !== '1.5.12') throw failure('cli-version-unavailable');
     const env = Object.freeze({ ...agyWindowsEnv(cliAreas), AGY_CLI_DISABLE_AUTO_UPDATE: 'true' });
 
     function live(signal) {

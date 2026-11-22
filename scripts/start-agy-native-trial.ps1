@@ -12,7 +12,6 @@ $source = Join-Path $project 'tmp\dsh-rc5-acp-native\source'
 $trial = Join-Path $project 'tmp\agy-native-trial'
 $stage = Join-Path $source 'packages\api\session-controller\.agy-native-trial'
 $executable = Join-Path $trial 'cli\agy.exe'
-$expectedHash = '397f0acb4005232799ebea7d5691fd113be009695f1986321876a300bf80aec6'
 $cliAreas = @{}
 foreach ($part in 'home','local','roaming','scratch') { $cliAreas[$part] = Join-Path $trial $part }
 $workspace = Join-Path $trial 'work'
@@ -123,9 +122,7 @@ if ((Get-FileHash -LiteralPath (Join-Path $source 'pnpm-lock.yaml') -Algorithm S
     'C24A38565023F08480F3832A554A676AD7479D36C0868063C85AD66BA6D3E68A') { throw '隔离 DSH 依赖版本不符。' }
 $node = Assert-OrdinaryPath $NodePath
 [void](Assert-OrdinaryPath $executable)
-if ((Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedHash) {
-  throw '官方 agy 程序已变化；停止启动，请重新核验版本。'
-}
+if (!(Test-Path -LiteralPath $executable -PathType Leaf)) { throw '未找到本机 agy.exe。' }
 $signature = Get-AuthenticodeSignature -LiteralPath $executable
 if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|,\s*)O=Google LLC(,|$)') {
   throw '官方 agy 签名不符。'

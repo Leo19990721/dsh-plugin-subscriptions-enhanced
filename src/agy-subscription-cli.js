@@ -4,7 +4,7 @@ import { lstat, mkdir, mkdtemp, open, opendir, realpath, rm, rmdir, writeFile } 
 import path from 'node:path';
 import { isPromise } from 'node:util/types';
 import { AgyAcpClient, AgyAcpError } from './agy-acp-client.js';
-import { AGY_WINDOWS_X64, AgyLaunchError, agyWindowsEnv, isLocalAgyPath, sameAgyPath, verifiedAgyExecutable } from './agy-launch.js';
+import { AgyLaunchError, agyWindowsEnv, isLocalAgyPath, sameAgyPath, verifiedAgyExecutable } from './agy-launch.js';
 import { createAgyTurnSession } from './agy-turn-session.js';
 
 const OWNER = '.subscriptions-agy-v1';
@@ -334,7 +334,6 @@ export function createAgySubscriptionCli({ root, executable, loopbackProxy } = {
           async start() {
             const result = await transport.start();
             live();
-            if (result.agentInfo.version !== AGY_WINDOWS_X64.version) throw fail('cli-version-mismatch');
             await checkPolicy(storage, 'after-initialize');
             live();
             return result;
@@ -368,7 +367,7 @@ export function createAgySubscriptionCli({ root, executable, loopbackProxy } = {
           // Only locally created errors may carry diagnostics to the caller.
           if (gateErrors.has(error) || error instanceof AgyLaunchError || error instanceof AgyAcpError) throw error;
           const { code } = error ?? {};
-          throw fail(['cli-version-mismatch', 'catalog-unavailable', 'closed', 'cli-busy',
+          throw fail(['catalog-unavailable', 'closed', 'cli-busy',
             'invalid-session', 'config-unconfirmed'].includes(code) ? code : 'cli-unavailable');
         }
       },

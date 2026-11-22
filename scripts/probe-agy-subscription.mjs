@@ -21,7 +21,7 @@ try {
   const modelIds = snapshot.model.options.map(model => model.value).filter(clean);
   console.log(JSON.stringify({ status: 'catalog', modelIds, promptSent: false, signInStarted: false }));
 } catch (error) {
-  const known = new Set([-32000, 'unsafe-storage', 'missing-cli', 'unsupported-cli', 'cli-version-mismatch', 'unverified-cli',
+  const known = new Set([-32000, 'unsafe-storage', 'missing-cli', 'unsupported-cli',
     'TIMEOUT', 'RPC_ERROR', 'SPAWN_FAILED', 'PROCESS_EXIT', 'PROTOCOL', 'cancelled', 'catalog-unavailable', 'cleanup-unconfirmed']);
   const phases = new Set(['initial', 'after-initialize', 'after-session-new', 'before-prompt', 'cleanup']);
   const reasons = new Set(['work-changed', 'work-identity', 'storage-identity', 'workspace-discovery', 'unexpected-config',

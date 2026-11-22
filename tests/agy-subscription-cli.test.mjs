@@ -10,7 +10,7 @@ import { AgyAcpErrorCode as C } from '../src/agy-acp-client.js';
 import { AgyLaunchError } from '../src/agy-launch.js';
 import { configureAgyTurn } from '../src/agy-turn-options.js';
 
-// Only this module instance substitutes Windows hash verification and child
+// Only this module instance substitutes Windows path validation and child
 // process creation. The real ACP framing, turn wrapper, child env, and disk
 // policy are exercised. The production factory has no injection options.
 const runtime = new URL('../src/agy-subscription-cli.js?in-memory-acp', import.meta.url).href;
@@ -225,11 +225,12 @@ test('explicit probe performs only initialize, new and close in a verified start
   assert.deepEqual(await readdir(f.root), ['.subscriptions-agy-v1']);
 });
 
-test('does not prompt when auth is missing, version is wrong or catalog is unusable', async t => {
+test('a newer CLI version can probe the catalog; missing auth or invalid catalog still fail', async t => {
   let which = 'auth';
   const f = await fixture(t, { onRequest(message, child, fallback) {
-    if (message.method === 'initialize' && which === 'version') {
-      child.reply(message, { protocolVersion: 1, agentInfo: { ...INFO, version: '1.5.13' } });
+    if (message.method === 'initialize') {
+      child.reply(message, { protocolVersion: 1, agentInfo: { ...INFO, version: '1.5.13' },
+        agentCapabilities: { sessionCapabilities: { close: {} } } });
     } else if (message.method === 'session/new' && which === 'auth') {
       child.send({ id: message.id, error: { code: C.AUTH_REQUIRED, message: 'SYNTHETIC_PRIVATE_ACCOUNT' } });
     } else if (message.method === 'session/new' && which === 'catalog') {
@@ -238,9 +239,9 @@ test('does not prompt when auth is missing, version is wrong or catalog is unusa
   } });
   await assert.rejects(f.cli.probe(), code(C.AUTH_REQUIRED));
   assert.deepEqual(methods(f.children.at(-1)), ['initialize', 'session/new']);
-  which = 'version';
-  await assert.rejects(f.cli.probe(), code('cli-version-mismatch'));
-  assert.deepEqual(methods(f.children.at(-1)), ['initialize']);
+  which = 'success';
+  assert.equal((await f.cli.probe()).model.currentValue, MODEL.currentValue);
+  assert.deepEqual(methods(f.children.at(-1)), ['initialize', 'session/new', 'session/close']);
   which = 'catalog';
   await assert.rejects(f.cli.probe(), code('catalog-unavailable'));
   assert.deepEqual(methods(f.children.at(-1)), ['initialize', 'session/new']);
@@ -482,10 +483,10 @@ test('disposal before the ACP write cancels the attempt; abort during a turn sen
   assert.deepEqual(await readdir(f.root), ['.subscriptions-agy-v1']);
 });
 
-test('failed trust or closed admission never launches or mutates a profile', async t => {
-  let error = new AgyLaunchError('unverified-cli');
+test('an invalid CLI path or closed admission never launches or mutates a profile', async t => {
+  let error = new AgyLaunchError('unsupported-cli');
   const f = await fixture(t, undefined, { verification() { if (error) throw error; }, proxy: 'http://user@127.0.0.1:1234' });
-  await assert.rejects(f.cli.probe(), code('unverified-cli'));
+  await assert.rejects(f.cli.probe(), code('unsupported-cli'));
   await gone(f.root);
   await assert.rejects(f.cli.probe(AbortSignal.abort(new Error('SYNTHETIC_PRIVATE_REASON'))), code('cancelled'));
   assert.equal(f.verified(), 1);

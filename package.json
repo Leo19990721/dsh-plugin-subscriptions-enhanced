@@ -1,6 +1,6 @@
 {
   "name": "dsh-subscriptions-enhanced",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "private": true,
   "type": "module",
   "description": "Manage DSH subscriptions and work with Gemini through the local official Antigravity CLI.",
@@ -32,15 +32,15 @@
     "check": "node scripts/check.mjs"
   },
   "dependencies": { "undici": "7.30.2" },
-  "devDependencies": { "dsh-plugin-subscriptions": "0.9.13" },
+  "devDependencies": { "dsh-plugin-subscriptions": "*" },
   "peerDependencies": {
-    "@deepseek-ai/cordis": ">=4.0.5 <4.2.0",
-    "@deepseek-ai/schemastery": ">=3.18.5 <4",
-    "@deepseek-ai/dsh-llm": ">=0.2.2-rc.3",
-    "@deepseek-ai/dsh-home-paths": ">=0.2.2-rc.3",
-    "@deepseek-ai/dsh-attachment": ">=0.2.2-rc.3",
-    "@deepseek-ai/dsh-web": ">=0.2.2-rc.3",
-    "@deepseek-ai/dsh-tools": ">=0.2.2-rc.3"
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/schemastery": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-home-paths": "*",
+    "@deepseek-ai/dsh-attachment": "*",
+    "@deepseek-ai/dsh-web": "*",
+    "@deepseek-ai/dsh-tools": "*"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": { "optional": true },

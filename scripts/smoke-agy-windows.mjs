@@ -1,11 +1,11 @@
-// Explicit Windows verification: connect to the hash-pinned official CLI
+// Explicit Windows verification: connect to a locally installed official CLI
 // with an isolated home. No login, session, prompt, or real workspace access.
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AgyAcpClient } from '../src/agy-acp-client.js';
-import { AGY_WINDOWS_X64, agyWindowsEnv, verifiedAgyExecutable } from '../src/agy-launch.js';
+import { agyWindowsEnv, verifiedAgyExecutable } from '../src/agy-launch.js';
 
 const [input, flag, loopbackProxy, ...extra] = process.argv.slice(2);
 assert.ok(input && extra.length === 0 && (flag === undefined || (flag === '--loopback-proxy' && loopbackProxy !== undefined)),
@@ -23,7 +23,6 @@ try {
   const env = { ...agyWindowsEnv(areas, process.env, loopbackProxy), AGY_CLI_DISABLE_AUTO_UPDATE: 'true' };
   client = new AgyAcpClient({ executable, cwd: areas.work, env, timeoutMs: 15_000 });
   const result = await client.start();
-  assert.equal(result.agentInfo.version, AGY_WINDOWS_X64.version);
   const caps = result.agentCapabilities?.sessionCapabilities ?? {};
   await client.close();
   console.log(JSON.stringify({ protocolVersion: result.protocolVersion, program: result.agentInfo.name,

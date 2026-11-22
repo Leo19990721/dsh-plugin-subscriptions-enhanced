@@ -12,13 +12,12 @@ const require = createRequire(import.meta.url);
 const upstream = process.env.SUBSCRIPTIONS_UPSTREAM_DIR
   ?? dirname(require.resolve('dsh-plugin-subscriptions/package.json'));
 const manifest = JSON.parse(await readFile(join(upstream, 'package.json'), 'utf8'));
-if (manifest.version !== '0.9.13') throw new Error(`Review enhancement seams before upgrading upstream ${manifest.version}`);
+if (manifest.name !== 'dsh-plugin-subscriptions') throw new Error('Unexpected subscriptions build input');
 let host = await readFile(join(upstream, 'lib/index.js'), 'utf8');
 let client = await readFile(join(upstream, 'lib/client.js'), 'utf8');
-const expectedHost = 'b5d71b623f9155d206587ca77fe7b9458427cb881b92dc91b24a958587eea7b4';
-const expectedClient = '4bc997d564f8ec7ad6434a760df94bb2d32b73889153c9f0fc3524c96a5c961b';
 const hash = source => createHash('sha256').update(source).digest('hex');
-if (hash(host) !== expectedHost || hash(client) !== expectedClient) throw new Error('Upstream artifacts changed; review instead of applying unverified patches');
+const hostSha256 = hash(host), clientSha256 = hash(client);
+// The patch functions below validate the code they modify, independent of version.
 function replaceOnce(source, old, next) {
   if (source.split(old).length !== 2) throw new Error(`Expected one integration seam: ${old.slice(0, 90)}`);
   return source.replace(old, () => next);
@@ -75,5 +74,5 @@ for (const name of ['writing-policy.js', 'writing-host.js', 'agy-local-plugin.js
   await copyFile(join(root, 'src', name), join(root, 'lib', name));
 }
 await copyFile(join(upstream, 'LICENSE'), join(root, 'LICENSE'));
-await writeFile(join(root, 'lib/upstream.json'), JSON.stringify({ name: manifest.name, version: manifest.version, hostSha256: expectedHost, clientSha256: expectedClient, patches: ['Remove legacy Antigravity transport and sign-in', 'Route the Google subscription to local official ACP', 'Codex ultrafast service_tier and /speed command', 'Parallel GPT session MCP bridge for Gemini', 'Host-only writing policy for ordinary DSH models', 'DSH quota badge positioning compatibility', 'Native Models footer for subscription management', 'local package identity'] }, null, 2) + '\n');
-console.log('Built from verified dsh-plugin-subscriptions@0.9.13; Google subscription uses official agy ACP.');
+await writeFile(join(root, 'lib/upstream.json'), JSON.stringify({ name: manifest.name, version: manifest.version, hostSha256, clientSha256, patches: ['Remove legacy Antigravity transport and sign-in', 'Route the Google subscription to local official ACP', 'Codex ultrafast service_tier and /speed command', 'Parallel GPT session MCP bridge for Gemini', 'Host-only writing policy for ordinary DSH models', 'DSH quota badge positioning compatibility', 'Native Models footer for subscription management', 'local package identity'] }, null, 2) + '\n');
+console.log(`Built from ${manifest.name}@${manifest.version}; Google subscription uses official agy ACP.`);

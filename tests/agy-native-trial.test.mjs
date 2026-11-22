@@ -28,8 +28,9 @@ test('trial staging publishes its local Host and Client under one named package'
   assert.match(source, /["']\.\/client["']\s*[:=]\s*["']\.\/[^"']+\.js["']/u);
 });
 
-test('trial launcher pins official executable and clears inherited provider credentials', () => {
-  assert.match(source, /397f0acb4005232799ebea7d5691fd113be009695f1986321876a300bf80aec6/u);
+test('trial launcher validates the local signed CLI without a hash pin and clears inherited credentials', () => {
+  assert.match(source, /Test-Path -LiteralPath \$executable -PathType Leaf/u);
+  assert.doesNotMatch(source, /Get-FileHash -LiteralPath \$executable/u);
   assert.match(source, /Get-AuthenticodeSignature/u);
   assert.match(source, /\$info\.Environment\.Clear\(\)/u);
   assert.match(source, /\['AGY_CLI_DISABLE_AUTO_UPDATE'\] = 'true'/u);
@@ -102,7 +103,6 @@ async function runHost(scenario = {}) {
       async request(method) { trace.calls.push({ method }); throw new Error('A raw startup request is not permitted'); }
     },
     AgyAcpErrorCode: { AUTH_REQUIRED: -32000, TIMEOUT: 'TIMEOUT', CLOSED: 'CLOSED' },
-    AGY_WINDOWS_X64: { version: '1.5.12' },
     agyWindowsEnv(areas) { assert.equal(areas, cliAreas); return { HOME: cliAreas.home }; },
     isLocalAgyPath: value => typeof value === 'string' && path.isAbsolute(value),
     sameAgyPath: (a, b) => path.normalize(a).toLowerCase() === path.normalize(b).toLowerCase(),
@@ -334,7 +334,7 @@ test('authentication transport opts in only for the explicit login factory', asy
   assert.deepEqual(h.calls.map(call => call.method), ['initialize', 'session/new']);
 });
 
-test('native session factory reverifies the pinned executable and rejects a different workspace', async t => {
+test('native session factory revalidates the executable path and rejects a different workspace', async t => {
   const h = await runHost();
   t.after(() => h.cleanup());
   await h.connect(new AbortController().signal);

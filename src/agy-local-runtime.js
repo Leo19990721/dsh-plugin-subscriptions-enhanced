@@ -5,7 +5,7 @@ import { mkdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/prom
 import { homedir } from 'node:os';
 import { join, win32 } from 'node:path';
 import { AgyAcpClient } from './agy-acp-client.js';
-import { AGY_WINDOWS_X64, agyWindowsEnv, isLocalAgyPath, verifiedAgyExecutable } from './agy-launch.js';
+import { agyWindowsEnv, isLocalAgyPath, verifiedAgyExecutable } from './agy-launch.js';
 import { LOCAL_FRAME_BYTES } from './agy-local-context.js';
 import { agyProxyEnv } from './agy-local-proxy.js';
 import { isAgySessionId } from './agy-session.js';
@@ -143,7 +143,6 @@ export function createLocalAgy({ executable, proxy, dataDir = join(homedir(), '.
       return {
         async start() {
           const result = await transport.start();
-          if (result.agentInfo.version !== AGY_WINDOWS_X64.version) throw fault('cli-version-mismatch');
           signal.throwIfAborted();
           return result;
         },
@@ -199,8 +198,7 @@ export function createLocalAgy({ executable, proxy, dataDir = join(homedir(), '.
     const onAbort = () => { void close(); };
     signal.addEventListener('abort', onAbort, { once: true });
     try {
-      const init = await transport.start();
-      if (init.agentInfo.version !== AGY_WINDOWS_X64.version) throw fault('cli-version-mismatch');
+      await transport.start();
       signal.throwIfAborted();
       if (action === 'login') await transport.authenticate('oauth-personal');
       else if (action === 'logout') await transport.logout();

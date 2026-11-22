@@ -86,8 +86,8 @@ function expireAt(deadline, expire) {
 function validateInitialize(result) {
   if (!record(result) || !Number.isSafeInteger(result.protocolVersion)) throw new AgyAcpError(C.PROTOCOL);
   if (result.protocolVersion !== 1) throw new AgyAcpError(C.UNSUPPORTED_PROTOCOL);
-  // Google documents this server name; the approved Windows CLI places it
-  // in agentInfo.name. The Host pins the approved executable's hash.
+  // Google documents this server name. The CLI version is descriptor metadata,
+  // not a compatibility check; the ACP protocol version above is what matters.
   const info = result.agentInfo;
   if (!record(info) || info.name !== 'Antigravity ACP Server' || !nonempty(info.version)
     || (info.title != null && typeof info.title !== 'string')

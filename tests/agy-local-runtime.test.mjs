@@ -1,16 +1,41 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { agyProxyEnv } from '../src/agy-local-proxy.js';
 import { localHistory, localPrompt } from '../src/agy-local-context.js';
 import { agyProgress } from '../src/agy-local-progress.js';
 import { createLocalAgy } from '../src/agy-local-runtime.js';
+import { verifiedAgyExecutable } from '../src/agy-launch.js';
 
 const signal = new AbortController().signal;
 const text = text => ({ type: 'text', text });
+
+test('validates an ordinary local agy.exe without pinning its contents', {
+  skip: (process.platform !== 'win32' || process.arch !== 'x64') && 'Windows x64 executable validation',
+}, async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-agy-path-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const exe = join(root, 'agy.exe');
+  await assert.rejects(verifiedAgyExecutable(exe), { code: 'missing-cli' });
+  await assert.rejects(verifiedAgyExecutable('agy.exe'), { code: 'unsupported-cli' });
+  const wrong = join(root, 'other.exe');
+  await writeFile(wrong, 'fixture');
+  await assert.rejects(verifiedAgyExecutable(wrong), { code: 'unsupported-cli' });
+  // No process is spawned; Windows performs the executable format check at launch.
+  for (const bytes of ['original bytes', 'different and longer upgraded bytes']) {
+    await writeFile(exe, bytes);
+    assert.equal(await verifiedAgyExecutable(exe), exe);
+  }
+  const directory = join(root, 'directory', 'agy.exe');
+  await mkdir(directory, { recursive: true });
+  await assert.rejects(verifiedAgyExecutable(directory), { code: 'unsupported-cli' });
+  const linked = join(root, 'linked');
+  await symlink(root, linked, 'junction');
+  await assert.rejects(verifiedAgyExecutable(join(linked, 'agy.exe')), { code: 'unsupported-cli' });
+});
 
 test('proxy auto-detects using environment then OS; direct and explicit trump both', async () => {
   let reads = 0;
@@ -67,7 +92,7 @@ test('quota reads both fixed commands concurrently via the verified CLI', async 
   await runtime.dispose();
 });
 
-test('real cwd, stable home and official ID survive a new runtime while policy changes', async t => {
+test('real cwd, stable home and official ID survive CLI upgrade and policy changes', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-agy-test-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const dataDir = join(root, 'runtime'), agentsFile = join(root, 'AGENTS.md');
@@ -81,7 +106,8 @@ test('real cwd, stable home and official ID survive a new runtime while policy c
     makeTransport(options) {
       spawns.push(options);
       return {
-        start: async () => ({ agentInfo: { version: '1.5.12' }, agentCapabilities: { loadSession: true, promptCapabilities: { image: true } } }),
+        start: async () => ({ agentInfo: { version: spawns.length === 1 ? '1.5.12' : '1.5.13' },
+          agentCapabilities: { loadSession: true, promptCapabilities: { image: true } } }),
         async request(method, params) {
           calls.push({ method, params });
           return { sessionId: params.sessionId ?? officialId, configOptions };

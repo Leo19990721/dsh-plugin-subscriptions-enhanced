@@ -51,8 +51,8 @@ function asLocalError(error) {
   if (code === -32000 || code === 'AUTH_REQUIRED' || code === 'auth-required') {
     return new LlmError('请先在 Google 官方 Antigravity CLI 登录，然后重新检查。', 'AGY_LOGIN_REQUIRED');
   }
-  if (['missing-cli', 'unsupported-cli', 'cli-version-mismatch', 'unverified-cli'].includes(code)) {
-    return new LlmError('找不到受支持的 Google 官方 Antigravity CLI。请检查安装位置和版本。', 'AGY_CLI_UNAVAILABLE');
+  if (['missing-cli', 'unsupported-cli'].includes(code)) {
+    return new LlmError('找不到可用的 Google 官方 Antigravity CLI。请检查安装路径。', 'AGY_CLI_UNAVAILABLE');
   }
   if (['model-unavailable', 'reasoning-effort-unavailable', 'config-unconfirmed'].includes(code)) {
     return new LlmError('当前 Google 账号无法使用这个 Gemini 型号或档位，请重新选择。', 'AGY_MODEL_UNAVAILABLE');
@@ -189,7 +189,7 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
               reasoning.set(value, reasoningOf(selected.thoughtLevel));
             } catch {
               // Real failures fence this session. Preserve the initial catalog
-              // and use only the known 1.5.12 fallback for unconfirmed models.
+              // and use the known fallback for unconfirmed models.
               if (!session.options) break;
             }
           }

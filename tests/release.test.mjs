@@ -7,18 +7,16 @@ test('the renamed bundle retains the existing repository and dependency metadata
   const pkg = JSON.parse(await readFile(new URL('package.json', root), 'utf8'));
   assert.equal(pkg.name, 'dsh-subscriptions-enhanced');
   assert.deepEqual(pkg.engines, { node: '>=24.0.0' });
-  for (const [id, range] of Object.entries(pkg.peerDependencies)) {
-    if (id.startsWith('@deepseek-ai/dsh-')) assert.equal(range, '>=0.2.2-rc.3', id);
-  }
+  for (const [id, range] of Object.entries(pkg.peerDependencies)) assert.equal(range, '*', id);
   assert.match(pkg.repository.url, /github\.com\/Leo19990721\/dsh-plugin-subscriptions-enhanced/);
   assert.ok(pkg.files.includes('NOTICE'));
   assert.deepEqual(pkg.dependencies, { undici: '7.30.2' });
-  assert.equal(pkg.devDependencies['dsh-plugin-subscriptions'], '0.9.13');
+  assert.equal(pkg.devDependencies['dsh-plugin-subscriptions'], '*');
   assert.deepEqual(Object.keys(pkg.exports), ['.', './client', './locale/*.json', './icon', './package.json']);
   for (const file of ['README.md', 'scripts/pack.ps1', 'scripts/smoke-agy-windows.mjs']) assert.doesNotMatch(await readFile(new URL(file, root), 'utf8'), /[CE]:[\\/](?:Users|Personal|AI)/);
 });
 
-test('release preserves the upstream copyright and explains its fixed-version patch maintenance', async () => {
+test('release preserves the upstream copyright and patch provenance', async () => {
   const license = await readFile(new URL('LICENSE', root), 'utf8');
   const notice = await readFile(new URL('NOTICE', root), 'utf8');
   assert.match(license, /Copyright \(c\) 2026 V1ki/);

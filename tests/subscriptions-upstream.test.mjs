@@ -12,13 +12,9 @@ test('DSH compatibility honors the declared peers without an engines.dsh require
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(Object.hasOwn(manifest.engines, 'dsh'), false);
   assert.equal(evaluatePluginCompatibility(manifest), undefined, `runs on DSH ${getDshRuntimeVersion()}`);
-  for (const version of ['0.2.2-rc.3', '0.2.2-rc.5', '0.2.2', '0.2.3-rc.1', '0.3.0-0', '0.3.0-rc.1', '0.3.0', '2.0.0']) {
+  for (const version of ['0.2.2-rc.2', '0.2.2-rc.5', '0.2.2', '0.3.0-rc.1', '0.3.0', '2.0.0']) {
     assert.equal(evaluatePluginCompatibility(manifest, {}, version), undefined, version);
   }
-  const rejection = evaluatePluginCompatibility(manifest, {}, '0.2.2-rc.2');
-  assert.equal(rejection?.exempted, false);
-  assert.deepEqual(rejection.requirements,
-    Object.fromEntries(Object.entries(manifest.peerDependencies).filter(([id]) => id.startsWith('@deepseek-ai/dsh-'))));
 });
 
 test('installed Models settings exposes the subscription footer after its add-provider control', async () => {

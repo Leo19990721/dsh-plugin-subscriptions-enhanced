@@ -3,11 +3,11 @@ V1ki/dsh-plugin-subscriptions 0.9.13.
 Upstream: https://github.com/V1ki/dsh-plugin-subscriptions
 Copyright (c) 2026 V1ki. The original MIT license is retained in LICENSE.
 
-The build checks the exact upstream Host and Client SHA-256 before removing the
-legacy Antigravity provider and applying quota UI, native Models integration,
-and package identity changes. Other providers keep the upstream account and
+The build checks integration points in the upstream Host and Client before
+removing the legacy Antigravity provider and applying quota UI, native Models
+integration, and package identity changes. It records the input version and digests. Other providers keep the upstream account and
 transport implementation. The Google subscription route delegates chat to a
-verified local Google Antigravity CLI over ACP. The package does not redistribute
+local Google Antigravity CLI over ACP. The package does not redistribute
 Google's CLI.
 The upstream subscription package is a build input; the shipped Host and Client
 contain the implementation and do not load that package at runtime.

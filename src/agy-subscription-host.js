@@ -35,9 +35,7 @@ function safeError(error, sent = false) {
     case 'model-unavailable':
     case 'reasoning-effort-unavailable': return noModel();
     case 'missing-cli':
-    case 'unsupported-cli':
-    case 'unverified-cli':
-    case 'cli-version-mismatch': return failure('AGY_CLI_UNAVAILABLE', '未找到已验证的 Google Antigravity CLI，请在模型设置中检查。');
+    case 'unsupported-cli': return failure('AGY_CLI_UNAVAILABLE', '未找到可用的 Google Antigravity CLI，请在模型设置中检查安装路径。');
     case 'cli-busy': return busy();
     case 'cleanup-unconfirmed': return failure('AGY_CLEANUP_UNCONFIRMED', '未能确认官方 Google Antigravity 已退出，后续发送已暂停。');
     default: return failure('AGY_REQUEST_UNAVAILABLE', '官方 Google Antigravity 暂时无法处理这条消息，DSH 没有重发。');

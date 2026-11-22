@@ -479,7 +479,7 @@ test('Upgrade 6 (0.3.0-gemini.7): createLocalAgy supports official ACP authentic
       return {
         async start() {
           events.push({ event: 'start' });
-          return { agentInfo: { version: '1.5.12' }, agentCapabilities: { auth: { logout: {} } }, authMethods: [{ id: 'oauth-personal' }] };
+          return { agentInfo: { version: '1.5.13' }, agentCapabilities: { auth: { logout: {} } }, authMethods: [{ id: 'oauth-personal' }] };
         },
         async authenticate(methodId) { events.push({ event: 'authenticate', methodId }); },
         async logout() { events.push({ event: 'logout' }); },
