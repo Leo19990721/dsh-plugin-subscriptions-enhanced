@@ -16,7 +16,7 @@ function agyDockRoute(model) {
 function ComposerSubscriptionUsage({ rpc, currentModel, t, agyT, quotaState, sessionId, useAgyDockModel }) {
   const route = useAgyDockModel(agyDockRoute);
   const legacySelection = react.useState();
-  if (route === 'hidden') return null;
+  if (route === 'hidden' || (route === 'antigravity' && typeof sessionId === 'string' && sessionId.startsWith('dsh-peer:'))) return null;
   if (route === 'antigravity') return react.createElement(AgyUsageBadge, { key: sessionId, rpc, t, agyT, quotaState });
   return react.createElement(SubscriptionUsageBadge, { rpc, currentModel, t, legacySelection });
 }

@@ -249,22 +249,21 @@ test('Antigravity opens on demand, shares the last result across sessions, and c
   unmountTwo();
 });
 
-test('after the first query fails, reopening shows the error and only Refresh retries', async () => {
+test('after the first query fails, reopening automatically retries and remote sessions hide local quota badge', async () => {
   const f = activate('zh');
   f.models.set('one', selected());
   const render = () => f.renderBadge(f.dock('one'));
   dockPill(render()).props.onClick();
   quotaCalls(f)[0].resolve({ ok: false });
   await nextTick();
+  assert.ok(nodes(render()).some(n => n.children.includes('暂时查不到 Google 额度，请检查官方 CLI 登录和网络代理后重试。')));
   dockPill(render()).props.onClick();
   dockPill(render()).props.onClick();
-  assert.equal(quotaCalls(f).length, 1);
-  const tree = render();
-  assert.ok(nodes(tree).some(n => n.children.includes('暂时查不到 Google 额度，请检查官方 CLI 登录和网络代理后重试。')));
-  dockRefresh(tree).props.onClick();
   assert.equal(quotaCalls(f).length, 2);
   quotaCalls(f)[1].resolve(quotaFixture());
   await nextTick();
+  f.models.set('dsh-peer:["host-1","session","s1"]', selected());
+  assert.equal(f.dock('dsh-peer:["host-1","session","s1"]'), null);
 });
 
 test('settings and dock share quota, one in-flight refresh, and reset invalidates stale replies', async t => {

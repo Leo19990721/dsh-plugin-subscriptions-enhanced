@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { mkdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { delimiter, join, resolve, win32 } from 'node:path';
 import { AgyAcpClient } from './agy-acp-client.js';
-import { agyWindowsEnv, isLocalAgyPath, sameAgyPath, verifiedAgyExecutable } from './agy-launch.js';
+import { agyWindowsEnv, discoverAgyExecutable, isLocalAgyPath, sameAgyPath, verifiedAgyExecutable } from './agy-launch.js';
 import { LOCAL_FRAME_BYTES } from './agy-local-context.js';
 import { agyProxyEnv, agyProxySnapshot } from './agy-local-proxy.js';
 import { dshHomePath, inventoryAgyWorkspace, readAgyRules, retireAgyLegacyBrowserCaches, syncAgySkills } from './agy-local-storage.js';
@@ -90,7 +90,7 @@ export function createLocalAgy({ executable, proxy, dataDir, agentsFile } = {}, 
     return name === undefined ? undefined : parentEnv[name];
   };
   const localAppData = inherited('LOCALAPPDATA');
-  const location = executable || (localAppData && join(localAppData, 'agy', 'bin', 'agy.exe'));
+  const resolveBinary = () => executable ? verify(executable) : discoverAgyExecutable(undefined, parentEnv, verify);
   const stateDir = dataDir ?? dshHomePath(parentEnv, 'plugin-data', 'subscriptions-enhanced', 'agy');
   const skillsSource = dshHomePath(parentEnv, 'skills');
   const sessions = new Set();
@@ -174,7 +174,7 @@ export function createLocalAgy({ executable, proxy, dataDir, agentsFile } = {}, 
   async function open(signal, { id, cwd: requestedCwd, mode = 'read-only', officialId, mcpServers = [], onPermission, persona } = {}) {
     if (disposed) throw fault('closed');
     signal.throwIfAborted();
-    const binary = await verify(location);
+    const binary = await resolveBinary();
     signal.throwIfAborted();
     if (disposed) throw fault('closed');
     const root = directory(id);
@@ -230,7 +230,7 @@ export function createLocalAgy({ executable, proxy, dataDir, agentsFile } = {}, 
   async function runAuthAction(signal, action) {
     if (disposed) throw fault('closed');
     signal.throwIfAborted();
-    const binary = await verify(location);
+    const binary = await resolveBinary();
     signal.throwIfAborted();
     if (disposed) throw fault('closed');
     const root = directory(undefined);
@@ -277,7 +277,7 @@ export function createLocalAgy({ executable, proxy, dataDir, agentsFile } = {}, 
   async function fetchQuota(signal) {
     if (disposed) throw fault('closed');
     signal?.throwIfAborted();
-    const binary = await verify(location);
+    const binary = await resolveBinary();
     signal?.throwIfAborted();
     const { env: proxies } = await resolveProxySnapshot(signal);
     const env = Object.fromEntries(Object.keys(parentEnv).filter(key => quotaUserKeys.has(key.toUpperCase()))

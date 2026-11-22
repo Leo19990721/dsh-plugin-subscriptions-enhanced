@@ -22,7 +22,7 @@ export function createAgyQuotaState(endpoint) {
       publish(empty);
     },
     async query(rpc, { force = false } = {}) {
-      if (!rpc || pending || (!force && (snapshot.quota || snapshot.failed))) return;
+      if (!rpc || pending || (!force && snapshot.quota)) return;
       const request = new AbortController();
       pending = request;
       publish({ ...snapshot, busy: true, failed: false });

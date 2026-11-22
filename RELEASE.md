@@ -1,5 +1,12 @@
 # Subscriptions Enhanced
 
+## 0.4.4
+
+- 没有可用 Gemini 模型时自动隐藏「写作模式」，登录后自动恢复显示。
+- 放宽 `agy` CLI 探测：除 `%LOCALAPPDATA%\agy\bin` 外，自动探测 `%USERPROFILE%\.local\bin` 与 `PATH`（并兼容 Windows ARM64 与 macOS/Linux）。
+- 放宽反重力单轮上限（`4 MB` 输出、`200` 次工具追踪），减少复杂大任务中途中断。
+- 跨电脑查看远程 Gemini 会话时隐藏本机额度胶囊避免串号；本机额度查询失败后再次点开浮层自动重试。
+
 ## 0.4.3
 
 - 允许经 DSH 认证的本人远程提交（手机 DSH Go / 跨电脑 Remote）正常与本机 Gemini 对话，不再误报 `AGY_CHAT_ONLY`，同时继续拦截定时任务与非 owner 来源。
