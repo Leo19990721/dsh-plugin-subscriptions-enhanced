@@ -13,7 +13,7 @@
 
 插件默认从 `%LOCALAPPDATA%\agy\bin\agy.exe` 找 CLI；用[官方 CLI](https://antigravity.google/docs/getting-started?tab=cli)登录，不需要 Google API Key。登录之后回到 **设置 → 模型 → Google Antigravity 接入状态**，点「重新检查」。Gemini 新消息从本机 DSH 聊天框提交，不开放远程或无人值守调用。
 
-已连接时，在 **设置 → 模型 → Google Antigravity → 管理** 点 **查看额度**，可直接查看剩余百分比、本地时间的重置点和 G1 Credits 余额。插件只在点击「查看额度」或「刷新额度」时通过官方 `agy --print` 查询，不弹终端、不后台轮询。
+已连接并选用 Google Antigravity 时，点击**聊天输入框下方的订阅用量胶囊**，即可查看各模型组的剩余百分比、本地重置时间和 G1 Credits 余额。首次打开才查询，再打开直接显示缓存，需更新时点「刷新」。**设置 → 模型 → Google Antigravity → 管理**也会显示同一份结果。查询只在用户操作时通过官方 `agy --print` 执行，不弹终端、不后台轮询。
 
 可以在插件的 `google` 配置里覆盖 `executable`、`dataDir` 和 `agentsFile`（为空则不加载全局规则）。`proxy` 默认 `auto`：先看代理环境变量，再走 Windows 当前用户的系统代理；可填明确的代理地址，填 `direct` 或空字符串则直连。`mcp` 可按名单选 `knowledge`、`windows`、`playwright`；`[]` 则不转接。
 

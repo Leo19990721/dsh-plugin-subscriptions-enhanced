@@ -31,6 +31,15 @@ const agyCopy = {
     quotaFetched: '{time} 更新',
     quotaResetPassed: '重置时间已过，请刷新',
     quotaUpgrade: '查看升级选项',
+    dockOpen: '点击查看用量',
+    dockRefresh: '刷新',
+    dockFiveHour: '5h 剩 {percent}%',
+    dockWeekly: '每周剩 {percent}%',
+    dockCredits: '剩余 credits: {count}',
+    dockFetched: '获取时间：{time}',
+    dockExpired: '{cycle}待刷新',
+    dockStale: '上次结果',
+    dockQuotaWeekly: '每周额度',
     login: '登录',
     loggingInShort: '登录中…',
     loggingInDetail: '正在通过 Google 官方 Antigravity CLI 发起登录，请在浏览器完成授权；完成后会自动连接。',
@@ -71,6 +80,15 @@ const agyCopy = {
     quotaFetched: 'Updated {time}',
     quotaResetPassed: 'Reset time passed; refresh to check',
     quotaUpgrade: 'See upgrade options',
+    dockOpen: 'Check usage',
+    dockRefresh: 'Refresh',
+    dockFiveHour: '5h: {percent}% left',
+    dockWeekly: 'Weekly: {percent}% left',
+    dockCredits: 'Remaining credits: {count}',
+    dockFetched: 'Fetched at: {time}',
+    dockExpired: '{cycle}: refresh to check',
+    dockStale: 'Last result',
+    dockQuotaWeekly: 'Weekly quota',
     login: 'Log in',
     loggingInShort: 'Signing in…',
     loggingInDetail: 'Signing in via Google’s official Antigravity CLI. Complete authorization in your browser to connect.',
@@ -83,7 +101,15 @@ const agyCopy = {
 };
 
 function installAgyClient(ctx) {
+  const quotaState = createAgyQuotaState(agySection);
   ctx.effect(() => ctx.locale.register(agySection, agyCopy), 'Antigravity status texts');
+  ctx.on('connection/reset', quotaState.clear);
+  ctx.effect(() => quotaState.clear, 'Antigravity quota cleanup');
+  return quotaState;
+}
+
+function fallbackAgyTranslate(key, params) {
+  return (agyCopy.en[key] ?? key).replace(/\{(\w+)\}/g, (_, name) => String(params?.[name] ?? ''));
 }
 
 function normalizeAgyResult(result) {
@@ -93,13 +119,12 @@ function normalizeAgyResult(result) {
   return valid ? { status, modelCount } : { status: 'unavailable', modelCount: 0 };
 }
 
-function useEnhancedGoogleStatus(rpc) {
+function useEnhancedGoogleStatus(rpc, quotaState) {
   const [attempt, setAttempt] = react.useState(0);
   const [state, setState] = react.useState();
   const [busy, setBusy] = react.useState();
   const [error, setError] = react.useState();
-  const [quota, setQuota] = react.useState();
-  const [quotaFailed, setQuotaFailed] = react.useState(false);
+  const quota = react.useSyncExternalStore(quotaState.subscribe, quotaState.getSnapshot);
   const actionAbort = react.useRef(null);
 
   react.useEffect(() => {
@@ -111,12 +136,14 @@ function useEnhancedGoogleStatus(rpc) {
       return rpc.call('/api', agySection, { action: attempt === 0 ? 'status' : 'inspect' }, signal);
     }).then(result => {
       if (signal.aborted) return;
-      setState(normalizeAgyResult(result));
+      const next = normalizeAgyResult(result);
+      if (next.status === 'signed-out' || next.status === 'missing-cli') quotaState.clear();
+      setState(next);
     }, () => {
       if (!signal.aborted) setState({ status: 'unavailable', modelCount: 0 });
     });
     return () => controller.abort();
-  }, [rpc, attempt]);
+  }, [rpc, attempt, quotaState]);
 
   react.useEffect(() => () => {
     actionAbort.current?.abort();
@@ -131,36 +158,28 @@ function useEnhancedGoogleStatus(rpc) {
 
   const runAction = react.useCallback(async (action) => {
     if (!rpc || actionAbort.current) return;
-    const checkingQuota = action === 'quota';
     const controller = new AbortController();
     actionAbort.current = controller;
     setBusy(action);
     setError(undefined);
-    setQuotaFailed(false);
-    if (!checkingQuota) setQuota(undefined);
     try {
       const result = await rpc.call('/api', agySection, { action }, controller.signal);
       if (controller.signal.aborted) return;
-      if (checkingQuota) {
-        if (result?.ok === true && Array.isArray(result.value?.windows) && Number.isFinite(result.value?.credits?.remaining)) setQuota(result.value);
-        else setQuotaFailed(true);
-      } else if (result?.ok === true) {
+      if (result?.ok === true) {
+        quotaState.clear();
         setState(normalizeAgyResult(result));
       } else {
         setError(result?.error?.message || true);
       }
     } catch (err) {
-      if (!controller.signal.aborted) {
-        if (checkingQuota) setQuotaFailed(true);
-        else setError((err instanceof Error && err.message) || true);
-      }
+      if (!controller.signal.aborted) setError((err instanceof Error && err.message) || true);
     } finally {
       if (actionAbort.current === controller) {
         actionAbort.current = null;
         setBusy(undefined);
       }
     }
-  }, [rpc]);
+  }, [rpc, quotaState]);
 
   const cancelAuth = react.useCallback(() => {
     actionAbort.current?.abort();
@@ -173,17 +192,44 @@ function useEnhancedGoogleStatus(rpc) {
     modelCount: state?.modelCount ?? 0,
     checking: state === undefined,
     connected: state?.status === 'ready',
-    busy,
+    busy: busy ?? (quota.busy ? 'quota' : undefined),
     error,
-    quota,
-    quotaFailed,
+    quota: quota.quota,
+    quotaFailed: quota.failed,
     recheck,
     login: () => runAction('login'),
     logout: () => runAction('logout'),
-    openQuota: () => runAction('quota'),
+    openQuota: () => {
+      if (!actionAbort.current && state?.status === 'ready') void quotaState.query(rpc, { force: true });
+    },
     cancelAuth,
   };
 }
+
+const agyQuotaCss = `
+.dsh-agy-quota, .dsh-agy-quota-group { display: grid; gap: 10px; min-width: 0; }
+.dsh-agy-quota { gap: 14px; }
+.dsh-agy-quota-group + .dsh-agy-quota-group {
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  padding-top: 12px;
+}
+.dsh-agy-quota-heading { font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary); }
+.dsh-agy-quota-window { display: grid; gap: 5px; }
+.dsh-agy-quota-line, .dsh-agy-quota-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 4px 12px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-agy-quota-summary { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 3px 8px; margin-inline-start: auto; }
+.dsh-agy-quota-percent { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.dsh-agy-quota-summary small, .dsh-agy-quota-footer small { font-size: 11px; color: var(--dsw-alias-label-tertiary); }
+.dsh-agy-quota-footer { border-top: 1px solid var(--dsw-alias-border-l2); padding-top: 8px; }
+.dsh-agy-quota-feedback { min-height: 20px; }
+`;
 
 function agyQuotaTime(value, today, t, reset = false) {
   const date = new Date(value);
@@ -193,13 +239,21 @@ function agyQuotaTime(value, today, t, reset = false) {
   return reset ? t('quotaToday', { time }) : time;
 }
 
-function AgyQuotaCard({ quota, t }) {
+function agyQuotaCycle(label) {
+  return /\bweekly limit(?: remaining)?$/iu.test(label) ? 'weekly'
+    : /\bfive hour limit(?: remaining)?$/iu.test(label) ? 'fiveHour' : undefined;
+}
+
+function agyQuotaGroup(group) {
+  return /^gemini models$/i.test(group) ? 'quotaGemini'
+    : /^claude and gpt models$/i.test(group) ? 'quotaClaudeGpt' : group;
+}
+
+function AgyQuotaWindows({ quota, t, today, dock = false }) {
   const h = react.createElement;
-  const today = new Date(useQuotaClock());
   const groups = new Map();
   for (const row of quota.windows) {
-    const key = /^gemini models$/i.test(row.group) ? 'quotaGemini'
-      : /^claude and gpt models$/i.test(row.group) ? 'quotaClaudeGpt' : row.group;
+    const key = agyQuotaGroup(row.group);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(row);
   }
@@ -207,25 +261,34 @@ function AgyQuotaCard({ quota, t }) {
   return h('div', { className: 'dsh-agy-quota' },
     ...ordered.map(([group, rows]) => {
       const heading = group === 'quotaGemini' || group === 'quotaClaudeGpt' ? t(group) : group;
+      const priority = row => agyQuotaCycle(row.label) === 'fiveHour' ? 0 : agyQuotaCycle(row.label) === 'weekly' ? 1 : 2;
+      const visibleRows = dock ? [...rows].sort((a, b) => priority(a) - priority(b)) : rows;
       return h('div', { key: group, className: 'dsh-agy-quota-group', role: 'group', 'aria-label': heading },
         h('div', { className: 'dsh-agy-quota-heading' }, heading),
-        ...rows.map(({ label, remainingPercent, resetAt }) => {
-          const cycle = /\bweekly limit(?: remaining)?$/iu.test(label) ? t('quotaWeekly')
-            : /\bfive hour limit(?: remaining)?$/iu.test(label) ? t('quotaFiveHour') : label;
+        ...visibleRows.map(({ label, remainingPercent, resetAt }) => {
+          const kind = agyQuotaCycle(label);
+          const cycle = kind === 'weekly' ? t(dock ? 'dockQuotaWeekly' : 'quotaWeekly') : kind === 'fiveHour' ? t('quotaFiveHour') : label;
           const color = remainingPercent <= 10 ? 'var(--dsw-alias-state-error-primary)'
             : remainingPercent <= 30 ? 'var(--dsw-alias-state-warn-label)' : 'var(--dsw-alias-state-success-primary)';
           return h('div', { key: label + resetAt, className: 'dsh-agy-quota-window' },
             h('div', { className: 'dsh-agy-quota-line' },
               h('span', null, cycle),
               h('span', { className: 'dsh-agy-quota-summary' },
-                h('strong', { className: 'dsh-agy-quota-percent', style: { color } }, `${remainingPercent}%`),
+                h('strong', { className: 'dsh-agy-quota-percent', style: { color } }, dock ? t('quotaRemaining', { percent: remainingPercent }) : `${remainingPercent}%`),
                 h('small', null, Date.parse(resetAt) <= today.getTime() ? t('quotaResetPassed')
                   : t('quotaReset', { time: agyQuotaTime(resetAt, today, t, true) })))),
             h('div', { role: 'progressbar', 'aria-label': `${heading} · ${cycle}`, 'aria-valuenow': remainingPercent,
               'aria-valuetext': t('quotaRemaining', { percent: remainingPercent }), style: styles$5.usageTrack },
               h('div', { style: { ...styles$5.usageFill, width: `${remainingPercent}%`, background: color } })));
         }));
-    }),
+    }));
+}
+
+function AgyQuotaCard({ quota, t }) {
+  const h = react.createElement;
+  const today = new Date();
+  return h('div', { className: 'dsh-agy-quota' },
+    h(AgyQuotaWindows, { quota, t, today }),
     h('div', { className: 'dsh-agy-quota-footer' },
       h('small', null, t('quotaFetched', { time: agyQuotaTime(quota.fetchedAt, today, t) })),
       h('small', null, t('quotaCredits'), ' ', quota.credits.remaining,

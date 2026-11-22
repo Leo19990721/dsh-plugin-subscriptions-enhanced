@@ -11,15 +11,23 @@ const nextTick = () => new Promise(resolve => setImmediate(resolve));
 
 function activate(lang, now = Date.now()) {
   let module;
+  const timers = [];
+  const docEvents = new Map();
+  const document = {
+    body: {},
+    addEventListener(name, listener) { docEvents.set(name, listener); },
+    removeEventListener(name, listener) { if (docEvents.get(name) === listener) docEvents.delete(name); },
+  };
   new Script(source).runInNewContext({
+    document,
     AbortController,
     DOMException,
     Date: class extends Date {
       constructor(...args) { super(...(args.length ? args : [now])); }
       static now() { return now; }
     },
-    setInterval,
-    clearInterval,
+    setInterval(fn, ms) { return timers.push({ fn, ms }); },
+    clearInterval() {},
     setTimeout,
     clearTimeout,
     window: {
@@ -29,15 +37,18 @@ function activate(lang, now = Date.now()) {
       __ModuleLoader__: { load(value) { module = value; } },
     },
   }, { timeout: 1000 });
-  const slots = [], locales = new Map(), calls = [];
-  const state = [];
-  const refs = [];
+  const slots = [], locales = new Map(), events = new Map(), calls = [], models = new Map();
+  const pageHooks = { state: [], refs: [] };
+  const dockHooks = { state: [], refs: [] };
+  const dockRouteHooks = { state: [], refs: [] };
+  let hooks = pageHooks;
   const effects = [];
   let stateIndex = 0;
   let refIndex = 0;
   let effectIndex = 0;
   let renderStarted = false;
   const React = {
+    Fragment: Symbol.for('react.fragment'),
     forwardRef: render => render,
     createElement(type, props, ...children) {
       assert.ok(renderStarted, 'module registration must not render');
@@ -45,6 +56,7 @@ function activate(lang, now = Date.now()) {
     },
     useId: () => 'sec-1',
     useState(initial) {
+      const { state } = hooks;
       const at = stateIndex++;
       if (!Object.hasOwn(state, at)) state[at] = typeof initial === 'function' ? initial() : initial;
       return [state[at], change => { state[at] = typeof change === 'function' ? change(state[at]) : change; }];
@@ -54,6 +66,7 @@ function activate(lang, now = Date.now()) {
       return [val, action => setVal(prev => reducer(prev, action))];
     },
     useRef(initial) {
+      const { refs } = hooks;
       const at = refIndex++;
       if (!Object.hasOwn(refs, at)) refs[at] = { current: initial };
       return refs[at];
@@ -70,7 +83,10 @@ function activate(lang, now = Date.now()) {
     jsx: (type, props) => React.createElement(type, props, ...(Array.isArray(props?.children) ? props.children : props?.children !== undefined ? [props.children] : [])),
     jsxs: (type, props) => React.createElement(type, props, ...(Array.isArray(props?.children) ? props.children : props?.children !== undefined ? [props.children] : [])),
     Fragment: Symbol.for('react.fragment'),
-  } : {});
+  } : id === 'react-dom' ? { createPortal: (element, target) => {
+    assert.equal(target, document.body);
+    return element;
+  } } : {});
   const connection = { rpc: { call(...args) {
     assert.ok(renderStarted, 'registration must not issue requests');
     const reply = Promise.withResolvers();
@@ -78,9 +94,12 @@ function activate(lang, now = Date.now()) {
     return reply.promise;
   } } };
   exports.apply({
-    get(name) { assert.equal(name, 'connection'); return connection; },
+    get(name) {
+      if (name === 'modelDirectories') return { directoryFor: id => ({ store: { getSnapshot: () => models.get(id) } }) };
+      assert.equal(name, 'connection'); return connection;
+    },
     effect(factory) { factory(); },
-    on() {}, inject() {},
+    on(name, fn) { events.set(name, [...(events.get(name) ?? []), fn]); }, inject() {},
     locale: { register(name, dictionary) { locales.set(name, dictionary); }, bind: ns => key => `${ns}:${key}` },
     slots: { inject(_slot, create) { return create(); }, register(definition, view) { slots.push({ ...definition, view }); return () => {}; } },
   });
@@ -99,8 +118,24 @@ function activate(lang, now = Date.now()) {
     }) };
   }
   return {
-    slots, locales, calls,
-    render() {
+    slots, locales, calls, models, timers, events, docEvents,
+    dock(id) {
+      const dock = slots.find(item => item.id === 'subscription-usage');
+      const props = dock.inject(id);
+      renderStarted = true;
+      hooks = dockRouteHooks;
+      stateIndex = 0;
+      return dock.view({ ...props, useAgyDockModel: select => select(props.hooks.agyDockModel.getSnapshot()) });
+    },
+    renderBadge(dock) {
+      return this.render(({ t, agyT }) => ({ ...dock, props: { ...dock.props, t, agyT } }));
+    },
+    runRenderedEffects() {
+      const off = effects.map(item => item?.create?.()).filter(fn => typeof fn === 'function');
+      return () => { for (const fn of off) fn(); };
+    },
+    render(view) {
+      hooks = view ? dockHooks : pageHooks;
       stateIndex = 0;
       refIndex = 0;
       effectIndex = 0;
@@ -108,7 +143,7 @@ function activate(lang, now = Date.now()) {
       renderStarted = true;
       const dictionary = locales.get(endpoint)?.[lang];
       const agyT = (key, args) => (dictionary?.[key] ?? key).replace(/\{(\w+)\}/g, (_, name) => args?.[name]);
-      return renderComponent(entry.view({ ...injected, t: key => key, agyT }));
+      return renderComponent(view ? view({ t: key => key, agyT }) : entry.view({ ...injected, t: key => key, agyT }));
     },
     mount() {
       cleanups = effects.map(item => item?.create?.()).filter(fn => typeof fn === 'function');
@@ -129,6 +164,149 @@ const nodes = tree => tree && typeof tree === 'object' && tree.type
   : [];
 const available = status => ({ ok: true, value: { status, modelCount: status === 'ready' ? 2 : 0 } });
 const agyCalls = f => f.calls.filter(c => c.args[1] === endpoint);
+
+const quotaCalls = f => agyCalls(f).filter(c => c.args[2].action === 'quota');
+const dockPill = tree => nodes(tree).find(n => n.props?.className === 'dsh-subscription-usage-pill');
+const dockDialog = tree => nodes(tree).find(n => n.props?.role === 'dialog');
+const dockRefresh = tree => nodes(tree).find(n => n.props?.className === 'dsh-agy-dock-refresh');
+const selected = (provider = 'antigravity', routable = true) => ({ current: { provider }, routable });
+const localTime = (day, hour, minute, second = 0) => new Date(2026, 10, day, hour, minute, second).toISOString();
+const quotaFixture = (weekly = 63) => ({ ok: true, value: {
+  windows: [
+    { group: 'Claude and GPT models', label: 'Weekly Limit', remainingPercent: 12, resetAt: localTime(28, 15, 50) },
+    { group: 'Gemini Models', label: 'Weekly Limit Remaining', remainingPercent: weekly, resetAt: localTime(28, 15, 50) },
+    { group: 'Gemini Models', label: 'Five Hour Limit Remaining', remainingPercent: 55, resetAt: localTime(22, 17, 20) },
+  ],
+  credits: { remaining: 0 }, fetchedAt: localTime(22, 13, 40, 9),
+} });
+
+test('the single dock entry swaps out the original badge only for Antigravity; unavailable saved route is hidden', () => {
+  const f = activate('zh');
+  assert.equal(f.slots.filter(entry => entry.name === 'conversation.composer.dock').length, 1);
+  f.models.set('s', { current: null, status: 'loading' });
+  assert.equal(f.dock('s'), null);
+  for (const provider of ['codex', 'claude', 'grok', 'copilot', 'deepseek']) {
+    f.models.set('s', selected(provider));
+    const entry = f.dock('s');
+    assert.equal(entry.type.name, 'SubscriptionUsageBadge');
+    assert.deepEqual(Object.keys(entry.props), ['rpc', 'currentModel', 't', 'legacySelection']);
+  }
+  f.models.set('s', { ...selected('codex'), pending: { provider: 'antigravity' } });
+  assert.equal(f.dock('s').type.name, 'SubscriptionUsageBadge');
+  f.models.set('s', selected('antigravity', false));
+  assert.equal(f.dock('s'), null);
+  f.models.set('s', selected('codex'));
+  const remembered = selected('codex').current;
+  f.dock('s').props.legacySelection[1](remembered);
+  f.models.set('s', selected());
+  assert.equal(f.dock('s').type.name, 'AgyUsageBadge');
+  assert.equal(f.dock('s').props.key, 's');
+  f.models.set('s', selected('deepseek'));
+  assert.equal(f.dock('s').props.legacySelection[0], remembered);
+  assert.equal(f.calls.length, 0);
+});
+
+test('Antigravity opens on demand, shares the last result across sessions, and cleans up dismiss handlers', async () => {
+  const f = activate('zh', Date.parse(localTime(22, 13, 40, 9)));
+  f.models.set('one', selected());
+  f.models.set('two', selected());
+  const render = id => f.renderBadge(f.dock(id ?? 'one'));
+  let tree = render();
+  const closed = f.runRenderedEffects();
+  assert.match(dockPill(tree).props['aria-label'], /Google Antigravity · 点击查看用量/);
+  assert.equal(dockDialog(tree), undefined);
+  assert.equal(f.calls.length, 0, 'mount makes no RPC');
+  assert.equal(f.timers.length, 0, 'mount starts no timers');
+  closed();
+  render('two');
+  assert.equal(f.calls.length, 0, 'changing sessions makes no RPC');
+  const open = dockPill(render()).props.onClick;
+  open(); open();
+  assert.equal(quotaCalls(f).length, 1, 'double clicks deduplicate');
+  tree = render();
+  const unmount = f.runRenderedEffects();
+  assert.equal(dockRefresh(tree).props['aria-disabled'], true);
+  assert.ok(nodes(tree).some(n => n.props?.role === 'status' && n.children.includes('正在查询额度…')));
+  quotaCalls(f)[0].resolve(quotaFixture());
+  await nextTick();
+  tree = render();
+  assert.match(dockPill(tree).props['aria-label'], /5h 剩 55% · 每周剩 63% · 剩余 credits: 0/);
+  assert.deepEqual(nodes(tree).filter(n => n.props?.role === 'group').map(n => n.props['aria-label']), ['Gemini 模型', 'Claude / GPT 模型']);
+  assert.ok(nodes(dockDialog(tree)).some(n => n.children.includes('获取时间：2026/11/22 13:40:09')));
+  assert.ok(nodes(dockDialog(tree)).some(n => n.children.includes('今天 17:20 重置')));
+  assert.equal(dockRefresh(tree).props['aria-disabled'], false);
+  f.docEvents.get('keydown')({ key: 'Escape' });
+  assert.equal(dockDialog(render()), undefined);
+  unmount();
+  assert.equal(f.docEvents.size, 0);
+  dockPill(render('two')).props.onClick();
+  tree = render('two');
+  const unmountTwo = f.runRenderedEffects();
+  assert.equal(quotaCalls(f).length, 1, 'reopening via another session reads cache');
+  assert.equal(f.timers.length, 0, 'opening and rendering cached quota start no timers');
+  f.docEvents.get('pointerdown')({ target: {} });
+  assert.equal(dockDialog(render('two')), undefined);
+  unmountTwo();
+});
+
+test('after the first query fails, reopening shows the error and only Refresh retries', async () => {
+  const f = activate('zh');
+  f.models.set('one', selected());
+  const render = () => f.renderBadge(f.dock('one'));
+  dockPill(render()).props.onClick();
+  quotaCalls(f)[0].resolve({ ok: false });
+  await nextTick();
+  dockPill(render()).props.onClick();
+  dockPill(render()).props.onClick();
+  assert.equal(quotaCalls(f).length, 1);
+  const tree = render();
+  assert.ok(nodes(tree).some(n => n.children.includes('暂时查不到 Google 额度，请检查官方 CLI 登录和网络代理后重试。')));
+  dockRefresh(tree).props.onClick();
+  assert.equal(quotaCalls(f).length, 2);
+  quotaCalls(f)[1].resolve(quotaFixture());
+  await nextTick();
+});
+
+test('settings and dock share quota, one in-flight refresh, and reset invalidates stale replies', async t => {
+  const f = activate('zh', Date.parse(localTime(22, 13, 40, 9)));
+  f.models.set('one', selected());
+  f.render();
+  t.after(f.mount());
+  await nextTick();
+  agyCalls(f)[0].resolve(available('ready'));
+  await nextTick();
+  const page = () => nodes(f.render());
+  const settingsButton = text => page().find(n => n.type === 'button' && n.children.includes(text));
+  const dock = () => f.renderBadge(f.dock('one'));
+  page().find(n => n.props?.id?.endsWith('-manage')).props.onClick();
+  settingsButton('查看额度').props.onClick();
+  dockPill(dock()).props.onClick();
+  assert.equal(quotaCalls(f).length, 1, 'settings and composer join the same request');
+  quotaCalls(f)[0].resolve(quotaFixture());
+  await nextTick();
+  assert.match(dockPill(dock()).props['aria-label'], /每周剩 63%/);
+  assert.ok(settingsButton('刷新额度'));
+  dockRefresh(dock()).props.onClick();
+  assert.equal(quotaCalls(f).length, 2);
+  assert.ok(page().some(n => n.props?.['aria-valuenow'] === 63));
+  quotaCalls(f)[1].reject(new Error('fixture network failure'));
+  await nextTick();
+  assert.ok(nodes(dock()).some(n => n.children.includes('刷新失败，下面是上次查到的额度。')));
+  assert.ok(page().some(n => n.children.includes('刷新失败，下面是上次查到的额度。')));
+  dockRefresh(dock()).props.onClick();
+  quotaCalls(f)[2].resolve(quotaFixture(72));
+  await nextTick();
+  assert.ok(page().some(n => n.props?.['aria-valuenow'] === 72));
+  assert.match(dockPill(dock()).props['aria-label'], /每周剩 72%/);
+  dockRefresh(dock()).props.onClick();
+  for (const reset of f.events.get('connection/reset')) reset();
+  assert.equal(quotaCalls(f)[3].args[3].aborted, true);
+  quotaCalls(f)[3].resolve(quotaFixture(99));
+  await nextTick();
+  assert.match(dockPill(dock()).props['aria-label'], /点击查看用量/);
+  assert.equal(page().some(n => n.props?.role === 'progressbar'), false);
+  assert.equal(quotaCalls(f).length, 4, 'reset does not refetch');
+});
 
 test('the shipped Client merges Google Antigravity into the single native Models footer and retains chat add-ons', () => {
   const { slots, locales } = activate();

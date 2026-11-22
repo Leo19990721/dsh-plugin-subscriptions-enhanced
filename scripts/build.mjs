@@ -47,12 +47,24 @@ host = host.replaceAll('Settings → Subscriptions', 'Settings → Models')
   .replaceAll('Settings > Subscriptions', 'Settings > Models').replaceAll('设置 → 订阅', '设置 → 模型');
 client = retireAntigravityClient(patchCodexUltrafastClient(patchModelsSettings(client, replaceOnce), replaceOnce));
 client = replaceOnce(client, 'registerEnhancedModelsSettings(ctx, connection, t, SubscriptionsSection);',
-  'installAgyClient(ctx);\n\tctx.inject(["modelDirectories"], (scope) => registerAgyTeamMenu(scope, react.createElement));\n\tregisterEnhancedModelsSettings(ctx, connection, t, SubscriptionsSection);');
-const badge = await readFile(join(root, 'src/badge-compat.js'), 'utf8');
-const modelsSettings = (await readFile(join(root, 'src/models-settings-ui.js'), 'utf8')).replace(/^export (?=function )/gm, '');
-const agyClient = await readFile(join(root, 'src/agy-client.js'), 'utf8');
-const teamMenu = (await readFile(join(root, 'src/agy-team-menu.js'), 'utf8')).replace(/^export (?=function )/gm, '');
-client = replaceOnce(client, 'return module.exports; } });', [badge, modelsSettings, agyClient, teamMenu, 'return module.exports; } });'].join('\n'));
+  'const quotaState = installAgyClient(ctx);\n\tconst agyT = ctx.locale.bind(agySection);\n\tctx.inject(["modelDirectories"], (scope) => registerAgyTeamMenu(scope, react.createElement));\n\tregisterEnhancedModelsSettings(ctx, connection, t, SubscriptionsSection, quotaState);');
+client = replaceOnce(client, `			currentModel: createCurrentModelReader(models, sessionId)
+		})
+	}, SubscriptionUsageBadge));`, `			currentModel: createCurrentModelReader(models, sessionId),
+			sessionId, agyT, quotaState,
+			hooks: { agyDockModel: agyDockModelStore(models, sessionId) }
+		})
+	}, ComposerSubscriptionUsage));`);
+// Retain the original badge's last non-Google selection across provider swaps,
+// without keeping its request effects mounted while Google is selected.
+client = replaceOnce(client, 'function SubscriptionUsageBadge({ rpc, currentModel, t }) {',
+  'function SubscriptionUsageBadge({ rpc, currentModel, t, legacySelection }) {');
+client = replaceOnce(client, 'const [lastSubscription, setLastSubscription] = (0, react.useState)(void 0);',
+  'const [lastSubscription, setLastSubscription] = legacySelection;');
+const clientSources = await Promise.all(['badge-compat.js', 'models-settings-ui.js', 'agy-client.js', 'agy-quota-state.js',
+  'agy-usage-dock.js', 'agy-team-menu.js'].map(async name =>
+  (await readFile(join(root, 'src', name), 'utf8')).replace(/^export (?=function )/gm, '')));
+client = replaceOnce(client, 'return module.exports; } });', [...clientSources, 'return module.exports; } });'].join('\n'));
 client = client.replace('//# sourceMappingURL=client.js.map', '');
 await mkdir(join(root, 'lib'), { recursive: true });
 await writeFile(join(root, 'lib/index.js'), host);

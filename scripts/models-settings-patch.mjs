@@ -61,11 +61,8 @@ export function patchModelsSettings(client, replaceOnce) {
 	const [statusError, setStatusError] = react.useState();
 	const attempts = react.useSyncExternalStore(loginState.subscribe, loginState.getSnapshot);
 	const statusGeneration = react.useRef(0);
-	const googleStatus = useEnhancedGoogleStatus(rpc);
-	const agyT = props.agyT ?? ((key, params) => {
-		const text = agyCopy.en[key] ?? key;
-		return Object.entries(params ?? {}).reduce((copy, [k, v]) => copy.replaceAll(\`{\${k}}\`, () => String(v)), text);
-	});`);
+	const googleStatus = useEnhancedGoogleStatus(rpc, props.quotaState);
+	const agyT = props.agyT ?? fallbackAgyTranslate;`);
   replace('const { rpc } = props;', 'const { rpc, loginState } = props;');
   replace('\tconst [deviceCodes, setDeviceCodes] = (0, react.useState)({});\n', '');
   replace('\tconst pollersRef = (0, react.useRef)(/* @__PURE__ */ new Map());\n', '');
@@ -192,7 +189,7 @@ ${content.slice(first, last)}
 		"aria-labelledby": sectionId,
 		role: "region",
 		children: [
-			react.createElement("style", null, providerSettingsCss + enhancedModelsCss),
+			react.createElement("style", null, providerSettingsCss + enhancedModelsCss + agyQuotaCss),
 			react.createElement("h3", { id: sectionId, className: "dsh-enhanced-subscription-title" }, t("enhancedAccountsTitle")),
 			statusError && react.createElement("div", { style: styles$5.actions },
 				react.createElement("p", { role: "alert" }, t("enhancedStatusError", { message: statusError })),

@@ -22,7 +22,7 @@ test('built browser contributes a Models footer and scopes teamwork to its nativ
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(descriptor.id, manifest.name);
   assert.equal(typeof descriptor.factory, 'function');
-  assert.match(source, /registerEnhancedModelsSettings\(ctx, connection, t, SubscriptionsSection\);/);
+  assert.match(source, /registerEnhancedModelsSettings\(ctx, connection, t, SubscriptionsSection, quotaState\);/);
   const patch = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8');
   assert.doesNotMatch(patch, /id: ui-model-selection|id: ui-agent-preset|id: ui-settings-models/);
   assert.doesNotMatch(source, /settings\.section|settings\.models\.provider-card|@deepseek-ai\/dsh-client-ui-|document\.(?:querySelector|head\.appendChild)|conversation\.hero\.agentPreset/);
