@@ -207,28 +207,65 @@ function useEnhancedGoogleStatus(rpc, quotaState) {
 }
 
 const agyQuotaCss = `
-.dsh-agy-quota, .dsh-agy-quota-group { display: grid; gap: 10px; min-width: 0; }
-.dsh-agy-quota { gap: 14px; }
+.dsh-agy-quota, .dsh-agy-quota-group { display: grid; gap: 6px; min-width: 0; }
+.dsh-agy-quota { gap: 10px; }
 .dsh-agy-quota-group + .dsh-agy-quota-group {
-  border-top: 1px solid var(--dsw-alias-border-l2);
-  padding-top: 12px;
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+  padding-top: 10px;
 }
-.dsh-agy-quota-heading { font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary); }
-.dsh-agy-quota-window { display: grid; gap: 5px; }
+.dsh-agy-quota-heading {
+  font-size: 11.5px;
+  line-height: 16px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-agy-quota-window { display: grid; gap: 4px; }
 .dsh-agy-quota-line, .dsh-agy-quota-footer {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
   align-items: baseline;
-  gap: 4px 12px;
+  gap: 2px 12px;
   font-size: 12px;
-  color: var(--dsw-alias-label-secondary);
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
 }
-.dsh-agy-quota-summary { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 3px 8px; margin-inline-start: auto; }
-.dsh-agy-quota-percent { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.dsh-agy-quota-summary small, .dsh-agy-quota-footer small { font-size: 11px; color: var(--dsw-alias-label-tertiary); }
-.dsh-agy-quota-footer { border-top: 1px solid var(--dsw-alias-border-l2); padding-top: 8px; }
-.dsh-agy-quota-feedback { min-height: 20px; }
+.dsh-agy-quota-summary {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0;
+  margin-inline-start: auto;
+  text-align: right;
+}
+.dsh-agy-quota-percent {
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.dsh-agy-quota-sep {
+  margin: 0 4px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-agy-quota-summary small, .dsh-agy-quota-footer small {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.dsh-agy-quota-track {
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--dsw-alias-border-l2);
+}
+.dsh-agy-quota-fill {
+  height: 100%;
+  border-radius: 2px;
+}
+.dsh-agy-quota-footer { border-top: 0.5px solid var(--dsw-alias-border-l2); padding-top: 8px; }
+.dsh-agy-quota-feedback { min-height: 18px; font-size: 12px; line-height: 18px; }
 `;
 
 function agyQuotaTime(value, today, t, reset = false) {
@@ -274,12 +311,14 @@ function AgyQuotaWindows({ quota, t, today, dock = false }) {
             h('div', { className: 'dsh-agy-quota-line' },
               h('span', null, cycle),
               h('span', { className: 'dsh-agy-quota-summary' },
-                h('strong', { className: 'dsh-agy-quota-percent', style: { color } }, dock ? t('quotaRemaining', { percent: remainingPercent }) : `${remainingPercent}%`),
+                h('span', { className: 'dsh-agy-quota-percent', style: { color } }, dock ? t('quotaRemaining', { percent: remainingPercent }) : `${remainingPercent}%`),
+                h('span', { className: 'dsh-agy-quota-sep', 'aria-hidden': true }, '·'),
                 h('small', null, Date.parse(resetAt) <= today.getTime() ? t('quotaResetPassed')
                   : t('quotaReset', { time: agyQuotaTime(resetAt, today, t, true) })))),
             h('div', { role: 'progressbar', 'aria-label': `${heading} · ${cycle}`, 'aria-valuenow': remainingPercent,
-              'aria-valuetext': t('quotaRemaining', { percent: remainingPercent }), style: styles$5.usageTrack },
-              h('div', { style: { ...styles$5.usageFill, width: `${remainingPercent}%`, background: color } })));
+              'aria-valuetext': t('quotaRemaining', { percent: remainingPercent }),
+              className: 'dsh-agy-quota-track' },
+              h('div', { className: 'dsh-agy-quota-fill', style: { width: `${remainingPercent}%`, background: color } })));
         }));
     }));
 }

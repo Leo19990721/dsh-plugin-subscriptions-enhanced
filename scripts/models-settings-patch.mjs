@@ -11,6 +11,14 @@ export function patchModelsSettings(client, replaceOnce) {
   };
 
   client = client.replaceAll('Settings → Subscriptions', 'Settings → Models').replaceAll('设置 → 订阅', '设置 → 模型');
+  replace(`\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+\t\t\t\t\t\t\t\tstyle: {
+\t\t\t\t\t\t\t\t\t...styles.providerMeta,
+\t\t\t\t\t\t\t\t\twhiteSpace: "normal",
+\t\t\t\t\t\t\t\t\toverflow: "visible"
+\t\t\t\t\t\t\t\t},
+\t\t\t\t\t\t\t\tchildren: translate("quotaAccountsHint")
+\t\t\t\t\t\t\t}),\n`, '');
   for (const key of ['accountsManage', 'nav', 'intro', 'proxyDialogClose']) {
     const marker = `\t${key}: "`;
     const lines = client.split('\n').filter(line => line.startsWith(marker));

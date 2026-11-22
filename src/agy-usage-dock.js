@@ -42,22 +42,34 @@ function agyDockTimestamp(value) {
 
 const agyDockCss = `
 .dsh-agy-dock-refresh {
-  border: 0;
-  padding: 2px 8px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  padding: 1px 7px;
   border-radius: var(--dsw-radius-sm, 6px);
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-secondary);
-  font: inherit;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 400;
   cursor: pointer;
 }
 .dsh-agy-dock-refresh:hover:not([aria-disabled="true"]) {
-  background: var(--dsw-alias-interactive-bg-active);
+  background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
 }
-.dsh-agy-dock-refresh[aria-disabled="true"] { opacity: 0.5; cursor: default; }
+.dsh-agy-dock-refresh[aria-disabled="true"] { opacity: 0.45; cursor: default; }
 .dsh-agy-dock-refresh:focus-visible {
   outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: 2px;
+}
+.dsh-agy-dock-meta {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
 }
 `;
 
@@ -131,10 +143,12 @@ function AgyUsageBadge({ rpc, t = fallbackTranslate, agyT = fallbackAgyTranslate
     h('div', { style: styles.titleRule, 'aria-hidden': true }),
     h('div', { style: styles.providerRow }, h('span', { style: styles.providerName },
       agyT('title'), h('span', { style: styles.currentTag }, t('usageBadgeCurrent')))),
-    h('div', { role: 'status', 'aria-atomic': true, style: failed && !busy ? styles$5.errorLine : styles$5.statusLine },
-      busy ? agyT('openingQuota') : failed ? agyT(quota ? 'quotaStale' : 'quotaFailed') : null),
+    (busy || failed) && h('div', {
+      role: 'status', 'aria-atomic': true,
+      style: { ...(failed && !busy ? styles$5.errorLine : styles$5.statusLine), marginBottom: quota ? 6 : 0 },
+    }, busy ? agyT('openingQuota') : agyT(quota ? 'quotaStale' : 'quotaFailed')),
     quota && h(react.Fragment, null,
-      h('div', { style: { ...styles.providerMeta, whiteSpace: 'normal', marginBottom: 12 } },
+      h('div', { className: 'dsh-agy-dock-meta' },
         h('div', null, agyT('dockFetched', { time: agyDockTimestamp(quota.fetchedAt) })),
         h('div', null, agyT('dockCredits', { count: quota.credits.remaining }))),
       h(AgyQuotaWindows, { quota, t: agyT, today: now, dock: true }))), document.body));
