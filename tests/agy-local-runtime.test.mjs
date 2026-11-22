@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { agyProxyEnv } from '../src/agy-local-proxy.js';
 import { localHistory, localPrompt, prepareLocalHistory } from '../src/agy-local-context.js';
-import { isAgyReadOnlyRefPath, matchesAgyReadOnlyRef, withinAgyWritableRoots } from '../src/agy-local-storage.js';
+import { inventoryAgyWorkspace, isAgyReadOnlyRefPath, matchesAgyReadOnlyRef, syncAgySkills, withinAgyWritableRoots } from '../src/agy-local-storage.js';
 import { agyProgress } from '../src/agy-local-progress.js';
 import { createLocalAgy } from '../src/agy-local-runtime.js';
 import { installAgyLineage } from '../src/agy-local-lineage.js';
@@ -828,4 +828,36 @@ test('installAgyLineage authorizes resumed pre-existing subagents and their call
   // Foreign child from another tree is still strictly rejected!
   const spoofed = { id: 'm5', source: { kind: 'subagent-settled', form: 'notice', senderSessionId: 'child-other-tree' } };
   assert.equal(authorize(rootAgent, [spoofed], { step: 4 }), false);
+});
+
+test('syncAgySkills follows official agy migration junction to sibling .gemini/config/skills while rejecting outside links', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-agy-skill-migrate-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const globalSkills = join(root, 'dsh-skills'), skillDir = join(globalSkills, 'demo');
+  const geminiDir = join(root, 'home', '.gemini');
+  const settingsDir = join(geminiDir, 'antigravity-cli');
+  const configDir = join(geminiDir, 'config');
+  const migratedSkills = join(configDir, 'skills');
+  const outside = join(root, 'outside');
+  await Promise.all([skillDir, settingsDir, migratedSkills, outside].map(dir => mkdir(dir, { recursive: true })));
+  await writeFile(join(skillDir, 'SKILL.md'), '# Demo Skill v1\n');
+  await writeFile(join(migratedSkills, '.dsh-skill-mirror'), '');
+  // Simulate newer agy.exe leaving a junction at antigravity-cli/skills -> config/skills
+  await symlink(migratedSkills, join(settingsDir, 'skills'), 'junction');
+
+  const inv1 = await inventoryAgyWorkspace({ globalSkills, signal });
+  await syncAgySkills(inv1, settingsDir, signal);
+  assert.equal(await readFile(join(migratedSkills, 'demo', 'SKILL.md'), 'utf8'), '# Demo Skill v1\n');
+  assert.equal(await readFile(join(settingsDir, 'skills', 'demo', 'SKILL.md'), 'utf8'), '# Demo Skill v1\n');
+
+  // Update skill and sync again cleanly
+  await writeFile(join(skillDir, 'SKILL.md'), '# Demo Skill v2\n');
+  const inv2 = await inventoryAgyWorkspace({ globalSkills, signal });
+  await syncAgySkills(inv2, settingsDir, signal);
+  assert.equal(await readFile(join(migratedSkills, 'demo', 'SKILL.md'), 'utf8'), '# Demo Skill v2\n');
+
+  // A junction pointing outside .gemini/config/skills must still be rejected!
+  await rm(join(settingsDir, 'skills'), { recursive: true, force: true });
+  await symlink(outside, join(settingsDir, 'skills'), 'junction');
+  await assert.rejects(syncAgySkills(inv2, settingsDir, signal), /Unsafe Antigravity skills directory/);
 });
