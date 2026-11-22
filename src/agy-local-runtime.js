@@ -11,6 +11,38 @@ import { dshHomePath, inventoryAgyWorkspace, readAgyRules, retireAgyLegacyBrowse
 import { isAgySessionId } from './agy-session.js';
 import { createAgyTurnSession } from './agy-turn-session.js';
 
+const BLOCKED_AGY_ASYNC_TOOLS_MATCHER = '^(invoke_subagent|define_subagent|manage_subagents|send_message|swarm|run_workflow|schedule)$';
+const DSH_DENY_SUBAGENT_FILE = 'dsh-deny-subagent.json';
+const NATIVE_SUBAGENT_GUIDANCE = [
+  '## DeepSeek Harness Subagent & Background Rules',
+  '- Never call Antigravity built-in `invoke_subagent`, `define_subagent`, `manage_subagents`, `send_message`, `swarm`, `run_workflow`, or `schedule` tools; their background callbacks are invisible to DeepSeek Harness and dropped after the turn ends.',
+  '- To delegate work to subagents, ALWAYS use the DeepSeek Harness native tools (`mcp_dsh_subagent`, `mcp_dsh_send_message`, `mcp_dsh_list_agents`, `mcp_dsh_wait_agent`, `mcp_dsh_list_subagent_models`). After delegating with `mcp_dsh_subagent`, finish your turn cleanly so DSH displays the running subagents and wakes you automatically when they complete.',
+].join('\n');
+
+const denyPayloadFor = nativeSubagents => ({
+  decision: 'deny',
+  reason: nativeSubagents
+    ? 'In DeepSeek Harness, Antigravity built-in subagent/swarm/workflow/schedule tools are disabled because their background callbacks are invisible to DSH and dropped after turn end. Use DSH native tools instead: mcp_dsh_subagent, mcp_dsh_send_message, mcp_dsh_list_agents, mcp_dsh_wait_agent, mcp_dsh_list_subagent_models.'
+    : 'In DeepSeek Harness, Antigravity built-in subagent/swarm/workflow/schedule tools are disabled because their background callbacks are invisible to DSH and dropped after turn end. Complete the task directly in this turn.',
+});
+
+const hooksFor = (platform = process.platform) => ({
+  'dsh-native-subagents-only': {
+    PreToolUse: [
+      {
+        matcher: BLOCKED_AGY_ASYNC_TOOLS_MATCHER,
+        hooks: [
+          {
+            type: 'command',
+            command: platform === 'win32' ? `type ${DSH_DENY_SUBAGENT_FILE}` : `cat ${DSH_DENY_SUBAGENT_FILE}`,
+            timeout: 5,
+          },
+        ],
+      },
+    ],
+  },
+});
+
 const settingsFor = (mode, hostFileReview = false) => {
   const restricted = mode === 'workspace-write' || mode === 'read-only';
   // With a DSH permission handler, permit requests (not access) for external
@@ -171,7 +203,7 @@ export function createLocalAgy({ executable, proxy, dataDir, agentsFile } = {}, 
     await rename(temporary, file);
   }
 
-  async function open(signal, { id, cwd: requestedCwd, mode = 'read-only', officialId, mcpServers = [], onPermission, persona } = {}) {
+  async function open(signal, { id, cwd: requestedCwd, mode = 'read-only', officialId, mcpServers = [], onPermission, persona, nativeSubagents = false } = {}) {
     if (disposed) throw fault('closed');
     signal.throwIfAborted();
     const binary = await resolveBinary();
@@ -183,13 +215,18 @@ export function createLocalAgy({ executable, proxy, dataDir, agentsFile } = {}, 
     const areas = Object.fromEntries(['home', 'local', 'roaming', 'scratch'].map(name => [name, join(root, name)]));
     const geminiDir = join(areas.home, '.gemini');
     const settingsDir = join(geminiDir, 'antigravity-cli');
+    const configDir = join(geminiDir, 'config');
     const isolatedWork = join(root, 'workspace');
-    await Promise.all([...Object.values(areas), settingsDir, ...(catalog ? [isolatedWork] : [])].map(dir => mkdir(dir, { recursive: true })));
+    await Promise.all([...Object.values(areas), settingsDir, ...(!catalog ? [configDir] : []), ...(catalog ? [isolatedWork] : [])].map(dir => mkdir(dir, { recursive: true })));
     const [cwd, proxySnapshot] = await Promise.all([actualDirectory(catalog ? isolatedWork : requestedCwd), resolveProxySnapshot(signal)]);
     const workspace = catalog ? undefined : await materializeWorkspace(settingsDir, contextCwd(requestedCwd, cwd), signal);
     await Promise.all([
       writeFile(join(settingsDir, 'settings.json'), JSON.stringify(settingsFor(mode, !catalog && typeof onPermission === 'function'))),
-      writeFile(join(geminiDir, 'GEMINI.md'), [...(workspace?.rules ?? []), !catalog && persona].filter(Boolean).join('\n\n')),
+      writeFile(join(geminiDir, 'GEMINI.md'), [...(workspace?.rules ?? []), !catalog && persona, !catalog && nativeSubagents && NATIVE_SUBAGENT_GUIDANCE].filter(Boolean).join('\n\n')),
+      ...(!catalog ? [
+        writeFile(join(configDir, DSH_DENY_SUBAGENT_FILE), JSON.stringify(denyPayloadFor(Boolean(nativeSubagents)))),
+        writeFile(join(configDir, 'hooks.json'), JSON.stringify(hooksFor())),
+      ] : []),
     ]);
     const env = childEnv(areas, proxySnapshot.env);
     signal.throwIfAborted();

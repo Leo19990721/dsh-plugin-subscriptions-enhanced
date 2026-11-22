@@ -686,3 +686,66 @@ test('reasoning and tool progress are display-only with final status and a tool-
   assert.match(view.receipt(), /已完成 1 项，失败 1 项/);
   assert.equal(view.hasAnswer, false);
 });
+
+test('non-catalog sessions block AGY built-in async subagent tools via PreToolUse hook and guide to DSH native subagents', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-agy-hooks-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dataDir = join(root, 'data'), cwd = join(root, 'work');
+  await mkdir(cwd);
+  const spawns = [];
+  const runtime = createLocalAgy({ dataDir, agentsFile: join(root, 'missing-agents.md') }, {
+    parentEnv: { DSH_HOME: root, SystemRoot: process.env.SystemRoot ?? root },
+    verify: () => join(root, 'agy.exe'),
+    resolveProxy: () => ({}),
+    makeTransport(options) {
+      spawns.push(options);
+      return {
+        start: async () => ({}),
+        close: async () => {},
+        async request() {
+          return {
+            sessionId: randomUUID(),
+            configOptions: [{
+              type: 'select', name: 'Model', id: 'model', category: 'model',
+              currentValue: 'gemini-4-neon', options: [{ value: 'gemini-4-neon', name: 'Gemini 4 Neon' }],
+            }],
+          };
+        },
+      };
+    },
+  });
+  t.after(() => runtime.dispose());
+
+  // Catalog session does not write hooks.json
+  const catalog = await runtime.open(signal);
+  await assert.rejects(lstat(join(spawns[0].env.HOME, '.gemini', 'config', 'hooks.json')), { code: 'ENOENT' });
+  await catalog.close();
+
+  // Chat session with nativeSubagents: true
+  const s1 = await runtime.open(signal, { id: 'chat-sub', cwd, mode: 'full', nativeSubagents: true });
+  const cfg1 = join(spawns[1].env.HOME, '.gemini', 'config');
+  const hooks = JSON.parse(await readFile(join(cfg1, 'hooks.json'), 'utf8'));
+  const deny1 = JSON.parse(await readFile(join(cfg1, 'dsh-deny-subagent.json'), 'utf8'));
+  const geminiMd1 = await readFile(join(spawns[1].env.HOME, '.gemini', 'GEMINI.md'), 'utf8');
+  const matcher = new RegExp(hooks['dsh-native-subagents-only'].PreToolUse[0].matcher);
+  for (const blocked of ['invoke_subagent', 'define_subagent', 'manage_subagents', 'send_message', 'swarm', 'run_workflow', 'schedule']) {
+    assert.equal(matcher.test(blocked), true, `should block ${blocked}`);
+  }
+  for (const allowed of ['mcp_dsh_subagent', 'mcp_dsh_send_message', 'mcp_dsh_list_agents', 'mcp_dsh_wait_agent', 'read_file', 'run_command']) {
+    assert.equal(matcher.test(allowed), false, `should allow ${allowed}`);
+  }
+  assert.equal(deny1.decision, 'deny');
+  assert.match(deny1.reason, /mcp_dsh_subagent/);
+  assert.match(geminiMd1, /mcp_dsh_subagent/);
+  await s1.close();
+
+  // Chat session with nativeSubagents: false
+  const s2 = await runtime.open(signal, { id: 'chat-nosub', cwd, mode: 'full', nativeSubagents: false });
+  const cfg2 = join(spawns[2].env.HOME, '.gemini', 'config');
+  const deny2 = JSON.parse(await readFile(join(cfg2, 'dsh-deny-subagent.json'), 'utf8'));
+  const geminiMd2 = await readFile(join(spawns[2].env.HOME, '.gemini', 'GEMINI.md'), 'utf8');
+  assert.equal(deny2.decision, 'deny');
+  assert.doesNotMatch(deny2.reason, /mcp_dsh_subagent/);
+  assert.doesNotMatch(geminiMd2, /mcp_dsh_subagent/);
+  await s2.close();
+});

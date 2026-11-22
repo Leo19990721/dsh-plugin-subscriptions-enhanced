@@ -449,7 +449,8 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
         if (!chat.session) {
           if (tools.size) chat.bridge = await openAgyMcp(ctx);
           chat.bridge?.setTurn(mcpTurn);
-          const open = officialId => runtime.open(turnSignal, { id, cwd, mode, officialId, persona, mcpServers: chat.bridge?.servers,
+          const open = officialId => runtime.open(turnSignal, { id, cwd, mode, officialId, persona,
+            nativeSubagents: tools.has('subagent'), mcpServers: chat.bridge?.servers,
             async onPermission(params, control) {
               chat.permissionActivity?.();
               try { return await permission(ctx, agent, params, control, chat.readOnlyRefs ?? []); }
