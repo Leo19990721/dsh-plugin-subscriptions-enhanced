@@ -23,6 +23,15 @@ test('Remote bridge only exposes tools in the current session tool set', () => {
   assert.deepEqual([...agyMcpTools(ctx, agent, toolSet, ['remote'])], [[remote.name, remote]]);
   assert.deepEqual([...agyMcpTools(ctx, agent, toolSet, ['knowledge'])], [[knowledge.name, knowledge]]);
   assert.equal(agyMcpTools(ctx, agent, toolSet, []).size, 0);
+
+  // Subscription media/search tools (image_generate + read_image for references, video_generate, x_search)
+  const imageGen = { name: 'image_generate' }, readImg = { name: 'read_image' }, videoGen = { name: 'video_generate' }, xSearch = { name: 'x_search' };
+  available = [knowledge, readImg, videoGen, xSearch, { name: 'pwsh' }];
+  assert.deepEqual([...agyMcpTools(ctx, agent, toolSet).keys()], [knowledge.name, videoGen.name, xSearch.name]);
+  available = [knowledge, imageGen, readImg, videoGen, xSearch, { name: 'pwsh' }];
+  assert.deepEqual([...agyMcpTools(ctx, agent, toolSet).keys()], [knowledge.name, imageGen.name, readImg.name, videoGen.name, xSearch.name]);
+  assert.deepEqual([...agyMcpTools(ctx, agent, toolSet, ['*']).keys()], [knowledge.name, imageGen.name, readImg.name, videoGen.name, xSearch.name]);
+  assert.equal(agyMcpTools(ctx, agent, toolSet, []).size, 0);
 });
 
 test('quota RPC queries only for a live exact loopback browser witness', async () => {
