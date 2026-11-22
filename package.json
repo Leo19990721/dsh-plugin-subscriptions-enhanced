@@ -1,6 +1,6 @@
 {
   "name": "dsh-subscriptions-enhanced",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "private": true,
   "type": "module",
   "description": "Manage DSH subscriptions and work with Gemini through the local official Antigravity CLI.",

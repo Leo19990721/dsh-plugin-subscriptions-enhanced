@@ -31,7 +31,7 @@ host = replaceOnce(host, 'const Config = z.object({', `const Config = z.object({
 		proxy: z.string().default("auto").description("auto: use environment or Windows system proxy; direct or empty: no proxy; otherwise a proxy URL."),
 		dataDir: z.string().description("Optional absolute path for the persistent DSH-owned Google CLI state."),
 		agentsFile: z.string().description("Optional absolute path to global instructions; empty disables loading them."),
-		mcp: z.array(z.union(["knowledge", "windows", "playwright"])).default(["knowledge", "windows", "playwright"]).description("Existing DSH MCP servers available to Gemini with Full Access; [] disables the bridge."),
+		mcp: z.array(z.union(["knowledge", "windows", "playwright", "remote"])).default(["knowledge", "windows", "playwright", "remote"]).description("Existing DSH tool groups available to Gemini with Full Access; [] disables the bridge."),
 		gptBridge: z.boolean().default(true).description("Allow Gemini to delegate and coordinate parallel non-Google DSH sessions via built-in MCP tools.")
 	}),`);
 host = replaceOnce(host, 'function apply(ctx, config) {', 'function apply(ctx, config) {\n\tctx.plugin(writing, { localGoogle: true });\n\tctx.plugin(agy, config.google);');

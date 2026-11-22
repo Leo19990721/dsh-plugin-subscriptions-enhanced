@@ -3,6 +3,24 @@ import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { AGY_API, AGY_METHOD } from '../lib/agy-ingress.js';
 import { apply } from '../lib/agy-local-plugin.js';
+import { agyMcpTools } from '../lib/agy-local-mcp.js';
+
+test('Remote bridge only exposes tools in the current session tool set', () => {
+  const agent = {}, toolSet = {};
+  const knowledge = { name: 'mcp__knowledge__knowledge_search' };
+  const remote = { name: 'remote_workspaces' };
+  let available = [knowledge];
+  const ctx = { tools: { definitions(current, resolved) {
+    assert.equal(current, agent);
+    assert.equal(resolved, toolSet);
+    return available;
+  } } };
+  assert.equal(agyMcpTools(ctx, agent, toolSet, ['remote']).size, 0);
+  available = [knowledge, remote];
+  assert.deepEqual([...agyMcpTools(ctx, agent, toolSet, ['remote'])], [[remote.name, remote]]);
+  assert.deepEqual([...agyMcpTools(ctx, agent, toolSet, ['knowledge'])], [[knowledge.name, knowledge]]);
+  assert.equal(agyMcpTools(ctx, agent, toolSet, []).size, 0);
+});
 
 test('quota RPC queries only for a live exact loopback browser witness', async () => {
   const browserPeer = { id: 'browser', principal: { kind: 'owner' }, signal: new AbortController().signal };

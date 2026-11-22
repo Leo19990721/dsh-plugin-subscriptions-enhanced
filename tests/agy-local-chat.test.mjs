@@ -152,6 +152,8 @@ test('a queued GPT result wakes exactly the owner Gemini session with its grante
     return result.content[0].text;
   };
   assert.equal(await tool('mcp__knowledge__dsh_integration_marker', {}), mcpMarker);
+  assert.equal(await tool('remote_list_hosts', {}), mcpMarker);
+  assert.equal(await tool('remote_workspaces', {}), mcpMarker);
   const child = JSON.parse(await tool('dsh_delegate_gpt', { prompt: '做一项合成任务', cwd: h.cwd,
     provider: ORDINARY_SELECTION.provider, model: ORDINARY_SELECTION.model }));
   assert.equal(child.notifyParent, true);

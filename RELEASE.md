@@ -1,5 +1,9 @@
 # Subscriptions Enhanced
 
+## 0.3.7
+
+- 本机 Gemini 的 MCP 桥接默认包含当前 DSH 会话已注册且可用的 Remote 工具（`remote_*`，含 `remote_workspaces`）。沿用原权限与审批；未安装 Remote 时不新增工具，GPT 自动回传验收轮仍不挂载 MCP。
+
 ## 0.3.5
 
 - DSH 接口包的 peer 依赖不再限制版本。安装位置合规的本机 `agy.exe` 不再因版本、字节数或 SHA-256 变化而被拒绝；仍检查 ACP 协议和实际能力。

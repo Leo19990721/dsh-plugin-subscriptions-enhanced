@@ -326,8 +326,8 @@ export async function createTurnHost(t, {
       },
     });
     await mount({ name: 'synthetic ordinary model and preset', inject: ['llm', 'agentPresets', 'systemPrompt', 'tools'], async apply(scope) {
-      if (localMcpMarker) scope.tools.register({
-        name: 'mcp__knowledge__dsh_integration_marker', description: 'Return the synthetic DSH MCP integration marker.',
+      for (const name of localMcpMarker ? ['mcp__knowledge__dsh_integration_marker', 'remote_list_hosts', 'remote_workspaces'] : []) scope.tools.register({
+        name, description: 'Return the synthetic DSH MCP integration marker.',
         parameters: { type: 'object', properties: {}, additionalProperties: false },
         output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
         async execute(_args, execution) { assert.ok(execution.agent); return localMcpMarker; },
