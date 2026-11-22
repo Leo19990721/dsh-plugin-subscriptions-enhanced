@@ -11,6 +11,7 @@ import { localHistory, localPrompt, prepareLocalHistory } from '../src/agy-local
 import { isAgyReadOnlyRefPath, matchesAgyReadOnlyRef, withinAgyWritableRoots } from '../src/agy-local-storage.js';
 import { agyProgress } from '../src/agy-local-progress.js';
 import { createLocalAgy } from '../src/agy-local-runtime.js';
+import { installAgyLineage } from '../src/agy-local-lineage.js';
 import { verifiedAgyExecutable } from '../src/agy-launch.js';
 
 const signal = new AbortController().signal;
@@ -748,4 +749,83 @@ test('non-catalog sessions block AGY built-in async subagent tools via PreToolUs
   assert.doesNotMatch(deny2.reason, /mcp_dsh_subagent/);
   assert.doesNotMatch(geminiMd2, /mcp_dsh_subagent/);
   await s2.close();
+
+  // Ephemeral auxiliary session uses a unique isolated dir (not catalog), writes hooks, and deletes itself on close
+  const aux1 = await runtime.open(signal, { ephemeral: true });
+  const aux2 = await runtime.open(signal, { ephemeral: true });
+  const homeAux1 = spawns[3].env.HOME;
+  const homeAux2 = spawns[4].env.HOME;
+  assert.notEqual(homeAux1, homeAux2);
+  assert.notEqual(homeAux1, spawns[0].env.HOME);
+  const auxHooks = JSON.parse(await readFile(join(homeAux1, '.gemini', 'config', 'hooks.json'), 'utf8'));
+  assert.ok(auxHooks['dsh-native-subagents-only']);
+  await aux1.close();
+  await aux2.close();
+  await assert.rejects(lstat(join(homeAux1, '..')), { code: 'ENOENT' });
+  await assert.rejects(lstat(join(homeAux2, '..')), { code: 'ENOENT' });
+});
+
+test('installAgyLineage authorizes resumed pre-existing subagents and their callbacks after restart', async () => {
+  const listeners = new Map();
+  const agentMap = new Map();
+  const rootAgent = {
+    id: 'root-1', status: 'running',
+    session: { header: { origin: undefined } },
+    ctx: { get: () => undefined },
+  };
+  const resumedChild = {
+    id: 'child-old', status: 'running',
+    session: { header: { origin: 'subagent', parentSession: 'root-1', delegationDepth: 1 } },
+    ctx: { get: () => undefined },
+  };
+  const foreignChild = {
+    id: 'child-other-tree', status: 'running',
+    session: { header: { origin: 'subagent', parentSession: 'other-root', delegationDepth: 1 } },
+    ctx: { get: () => undefined },
+  };
+  agentMap.set('root-1', rootAgent);
+  agentMap.set('child-old', resumedChild);
+  agentMap.set('child-other-tree', foreignChild);
+  const subagents = {
+    rootOf(agent) {
+      if (agent === resumedChild) return rootAgent;
+      if (agent === foreignChild) return undefined;
+      return agent;
+    },
+  };
+  const ctx = {
+    get(key) {
+      if (key === 'agents') return { get: id => agentMap.get(id) };
+      if (key === 'subagents') return subagents;
+      return undefined;
+    },
+    on(event, fn) {
+      const list = listeners.get(event) ?? [];
+      list.push(fn);
+      listeners.set(event, list);
+      return () => {};
+    },
+  };
+  const authorize = installAgyLineage(ctx, () => true);
+
+  // Simulate owner prompt authorizing root after restart (no subagent/start was emitted for child-old!)
+  const ownerMsg = { id: 'm1', source: { kind: 'user', rpcId: 'rpc-1', principal: { kind: 'owner' } } };
+  for (const fn of listeners.get('agent/inbox/inserted') ?? []) fn({ agent: rootAgent, message: ownerMsg });
+  for (const fn of listeners.get('agent/pre-step') ?? []) {
+    await fn({ agent: rootAgent, messages: [ownerMsg], signal: new AbortController().signal }, async () => ({ kind: 'enter', messages: [ownerMsg] }));
+  }
+
+  // Resumed child receives a relay from root (e.g., send_message after restart)
+  const relayToChild = { id: 'm2', source: { kind: 'agent-message', form: 'relay', senderSessionId: 'root-1' } };
+  assert.equal(authorize(resumedChild, [relayToChild], { step: 1 }), true);
+
+  // Root receives subagent-settled and agent-message from resumed pre-existing child
+  const settledFromOldChild = { id: 'm3', source: { kind: 'subagent-settled', form: 'notice', senderSessionId: 'child-old' } };
+  const relayFromOldChild = { id: 'm4', source: { kind: 'agent-message', form: 'relay', senderSessionId: 'child-old' } };
+  assert.equal(authorize(rootAgent, [settledFromOldChild], { step: 2 }), true);
+  assert.equal(authorize(rootAgent, [relayFromOldChild], { step: 3 }), true);
+
+  // Foreign child from another tree is still strictly rejected!
+  const spoofed = { id: 'm5', source: { kind: 'subagent-settled', form: 'notice', senderSessionId: 'child-other-tree' } };
+  assert.equal(authorize(rootAgent, [spoofed], { step: 4 }), false);
 });

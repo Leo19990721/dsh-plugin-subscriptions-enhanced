@@ -318,7 +318,7 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
         const raw = parts.join('\n\n').trim();
         const promptText = raw.length <= 120_000 ? raw : `${raw.slice(0, 58_000)}\n\n[... truncated ...]\n\n${raw.slice(-58_000)}`;
         if (!promptText) throw new LlmError('缺少可用于生成的对话内容。', 'AGY_EMPTY_RESPONSE');
-        const session = await runtime.open(signal);
+        const session = await runtime.open(signal, { ephemeral: true });
         try {
           const liveEfforts = reasoningOf(session.options?.thoughtLevel)?.efforts;
           await session.prepare({ model: request.model, reasoningEffort: compatibleEffort(request.reasoningEffort, liveEfforts) }, signal);
