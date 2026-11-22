@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { localHistory, prepareLocalHistory } from '../src/agy-local-context.js';
-import { agyGptBridgeTools, extractAssistantReplies, isForbiddenGptProvider } from '../src/agy-local-gpt-bridge.js';
+import { agyGptBridgeTools, createGptReturns, extractAssistantReplies, isForbiddenGptProvider } from '../src/agy-local-gpt-bridge.js';
 import { createLocalAgy } from '../src/agy-local-runtime.js';
 
 const textBlock = text => ({ type: 'text', text });
@@ -67,6 +67,44 @@ test('Upgrade 3: built Host & Client support Codex ultrafast tier, catalog disco
   assert.equal(codexRequestBody(reqOpts, resolved, 'fast').service_tier, 'priority');
   assert.equal(codexRequestBody(reqOpts, resolved, true).service_tier, 'priority');
   assert.equal(codexRequestBody(reqOpts, resolved, 'ultrafast').service_tier, 'ultrafast');
+});
+
+test('parallel returns correlate the exact request, bound the summary and honor cancellation', async () => {
+  const parent = { id: 'parent' };
+  const message = (seq, rpcId) => ({ seq, type: 'user/message', surfaceOp: 'append', data: { source: { rpcId } } });
+  const event = (seq, type, data) => ({ seq, type, data });
+  const reply = (seq, text) => event(seq, 'assistant/message', { message: { content: [textBlock(text)] } });
+  const end = (seq, kind = 'completed') => event(seq, 'turn/end', { reason: { kind } });
+  const events = [event(1, 'turn/start'), message(2, 'old'), reply(3, 'unrelated'), end(4),
+    event(5, 'turn/start'), message(6, 'wanted'), reply(7, `start ${'中'.repeat(7000)} end`), end(8),
+    event(9, 'turn/start'), message(10, 'later'), reply(11, 'wrong'), end(12)];
+  const child = { session: { snapshotEvents: start => events.filter(e => e.seq >= start) } };
+  let wait;
+  const controller = { wait: (request, signal) => {
+    wait = Promise.withResolvers();
+    signal.addEventListener('abort', () => wait.reject(signal.reason), { once: true });
+    return wait.promise;
+  } };
+  const services = { sessionController: controller, agents: { get: () => child } };
+  const notices = [];
+  const lifetime = new AbortController();
+  const returns = createGptReturns({ get: name => services[name] }, lifetime.signal, (...args) => notices.push(args));
+  assert.equal(returns.watch(parent, 'child', 'wanted', 0, '任务'), true);
+  wait.resolve({ reason: 'idle', state: { cursor: 12 } });
+  await returns.drain();
+  assert.equal(notices.length, 1);
+  const [destination, body] = notices[0];
+  assert.equal(destination, parent);
+  assert.match(body, /不要再次自动派活[\s\S]*start[\s\S]*end/);
+  assert.doesNotMatch(body, /unrelated|wrong/);
+  assert.ok(body.length < 5300);
+  for (const cancel of [() => returns.cancel('parent'), () => returns.cancel('child'), () => lifetime.abort()]) {
+    assert.equal(returns.watch(parent, 'child', 'wanted', 0), true);
+    cancel();
+    await returns.drain();
+  }
+  assert.equal(notices.length, 1);
+  assert.equal(returns.watch(parent, 'child', 'wanted', 0), false);
 });
 
 test('Upgrade 4: Parallel GPT bridge tools block Google recursion, avoid global default mutation, and coordinate sessions', async t => {
@@ -265,7 +303,18 @@ test('Upgrade 4: Parallel GPT bridge tools block Google recursion, avoid global 
     assert.equal(createdSessions.get(result.sessionId).title, expectedTitle);
   }
 
-  await delegate.execute({ sessionId: started.sessionId, prompt: '继续', title: '不要重命名' }, turn, signal);
+  const watched = [];
+  const stopReturns = [];
+  const notifying = agyGptBridgeTools(ctx, { notify: (...args) => { watched.push(args); return true; }, cancelReturns: id => stopReturns.push(id) });
+  const task = { sessionId: started.sessionId, prompt: '继续', title: '不要重命名' };
+  assert.equal((await notifying.get('dsh_delegate_gpt').execute(task, turn, signal)).notifyParent, true);
+  assert.equal((await notifying.get('dsh_delegate_gpt').execute({ ...task, notifyParent: false }, turn, signal)).notifyParent, false);
+  await notifying.get('dsh_delegate_gpt').execute({ ...task, wait: true }, turn, signal);
+  assert.equal(watched.length, 1);
+  assert.equal(watched[0][0], parentAgent);
+  assert.equal(watched[0][1], started.sessionId);
+  await notifying.get('dsh_gpt_stop').execute({ sessionId: started.sessionId }, turn, signal);
+  assert.deepEqual(stopReturns, [started.sessionId]);
   assert.equal(createdSessions.get(started.sessionId).title, '架构重构（GPT）');
 });
 

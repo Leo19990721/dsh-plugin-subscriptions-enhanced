@@ -1,5 +1,10 @@
 # Subscriptions Enhanced
 
+## 0.3.2
+
+- 异步并行 GPT 任务默认在结束后回传一次，主会话排队用 Gemini 验收，不打断当前对话。设置 `notifyParent: false` 可关闭。
+- Gemini 正文中的 Windows `file://` Markdown 链接转换为 DSH 原生本地链接，保留行号并跳过代码。
+
 ## 0.3.1
 
 - Google Antigravity 额度面板按模型组展示，Gemini 通用额度置顶；周期名随界面语言显示，重置时间按本地时区显示。

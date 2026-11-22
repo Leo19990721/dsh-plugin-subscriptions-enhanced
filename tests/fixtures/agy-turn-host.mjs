@@ -57,12 +57,12 @@ function fakeChild(onRequest, onExit) {
 }
 
 function fakeSessionFactory({ root, cwd, configurations, acpConfig, acpCalls, acpExits, acpPrompt, apis }) {
-  return ({ cwd: requestedCwd = cwd, signal } = {}) => {
+  return ({ cwd: requestedCwd = cwd, signal, mcpServers } = {}) => {
     signal?.throwIfAborted();
     assert.equal(requestedCwd, cwd, 'only the fixture directory can reach synthetic ACP');
     let id;
-    return createAgyTurnSession({ cwd, timeLimits: { open: 2500, turn: 4500, cancel: 2500 }, makeClient: callbacks => new AgyAcpClient({
-      ...callbacks, cwd, executable: join(root, 'never-launched-agy.exe'), env: {}, timeoutMs: 2500,
+    return createAgyTurnSession({ cwd, mcpServers, timeLimits: { open: 2500, turn: 4500, cancel: 2500 }, makeClient: callbacks => new AgyAcpClient({
+      ...callbacks, cwd, executable: join(root, 'never-launched-agy.exe'), env: {}, timeoutMs: 2500, allowMcpServers: Boolean(mcpServers?.length),
       spawnFactory: () => fakeChild(({ id: rpcId, method, params }, child) => {
         acpCalls.push({ method, params, hasId: rpcId !== undefined });
         const result = value => child.send({ id: rpcId, result: value });

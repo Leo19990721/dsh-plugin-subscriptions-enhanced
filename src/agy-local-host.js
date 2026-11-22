@@ -1,8 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import { stat, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { LlmAdapter, LlmError, resolveRetryPolicy } from '@deepseek-ai/dsh-llm';
 import { prepareLocalHistory, localPrompt, localSubmissions } from './agy-local-context.js';
-import { agyGptBridgeTools } from './agy-local-gpt-bridge.js';
+import { agyGptBridgeTools, createGptReturns, GPT_RETURN_PREFIX } from './agy-local-gpt-bridge.js';
 import { agyMcpTools, openAgyMcp } from './agy-local-mcp.js';
 import { agyProgress, agyUsage } from './agy-local-progress.js';
 import { createLocalAgy } from './agy-local-runtime.js';
@@ -117,6 +118,46 @@ async function permission(ctx, agent, params, signal) {
 export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(config), authorize = () => true) {
   const lifetime = new AbortController();
   const chats = new Map();
+  const returnTickets = new Map();
+  const returnIdOf = message => typeof message.source?.rpcId === 'string' && message.source.rpcId.startsWith(GPT_RETURN_PREFIX)
+    ? message.source.rpcId : undefined;
+  function validReturn(agent, message) {
+    const ticket = returnTickets.get(returnIdOf(message));
+    return ticket?.agent === agent && !ticket.signal.aborted && ticket.deadline > Date.now()
+      && message.content.length === 1 && message.content[0].type === 'text' && message.content[0].text === ticket.text
+      && authorize(agent, [message]);
+  }
+  const returns = createGptReturns(ctx, lifetime.signal, async (agent, text, signal, childId) => {
+    if (signal.aborted || authInFlight || ctx.agents.get(agent.id) !== agent || agent.model.current()?.provider !== GOOGLE) return;
+    for (const [id, ticket] of returnTickets) if (ticket.deadline <= Date.now() || ticket.signal.aborted) revokeReturn(id, ticket);
+    if (returnTickets.size >= 32) return;
+    const requestId = `${GPT_RETURN_PREFIX}${randomUUID()}`;
+    const ticket = { agent, text, signal, childId, deadline: Date.now() + 30 * 60_000 };
+    ticket.timer = setTimeout(() => revokeReturn(requestId, ticket), 30 * 60_000).unref();
+    returnTickets.set(requestId, ticket);
+    try {
+      const result = await ctx.get('sessionController').prompt({ sessionId: agent.id, requestId, mode: 'queue',
+        content: [{ type: 'text', text }] }, signal);
+      if (result?.accepted !== true || returnTickets.get(requestId) !== ticket) revokeReturn(requestId, ticket);
+    } catch { revokeReturn(requestId, ticket); }
+  });
+  function forgetReturn(id) {
+    clearTimeout(returnTickets.get(id)?.timer);
+    returnTickets.delete(id);
+  }
+  function revokeReturn(id, ticket) {
+    forgetReturn(id);
+    const inbox = ticket.agent.inbox;
+    try {
+      for (const message of [...inbox.nextTurn, ...inbox.nextStep]) {
+        if (returnIdOf(message) === id) inbox.remove(message.id);
+      }
+    } catch { /* Agent already disposed. */ }
+  }
+  function cancelReturns(id) {
+    returns.cancel(id);
+    for (const [key, ticket] of returnTickets) if (ticket.agent.id === id || ticket.childId === id) revokeReturn(key, ticket);
+  }
   const allowedMcp = config.mcp ?? ['knowledge', 'windows', 'playwright'];
   let catalog, images = false, loading, authInFlight;
   let status = 'unchecked';
@@ -194,6 +235,8 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
     if (typeof runtime.logout !== 'function') throw new LlmError('当前环境不支持在 DSH 内退出 Google 登录。', 'AGY_AUTH_UNSUPPORTED');
     const signal = requestSignal ? AbortSignal.any([requestSignal, lifetime.signal]) : lifetime.signal;
     authInFlight = (async () => {
+      returns.cancelAll();
+      returnTickets.clear();
       await Promise.allSettled([...chats.values()].map(closeChat));
       chats.clear();
       await runtime.logout(signal);
@@ -244,7 +287,13 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
       }
       const { openTurnStartSeq: start, lastStepStartSeq: step, lastTurn: turn } = ctx.agents.turnBoundaryOf(agent.session);
       const messages = start === null || step === null || step < start ? [] : localSubmissions(agent.session, step);
-      if (!messages.length || !authorize(agent, messages)) throw new LlmError('请由本人发起新的聊天消息后再使用 Gemini。', 'AGY_CHAT_ONLY');
+      const callbackMessages = messages.filter(returnIdOf);
+      if (!messages.length || !authorize(agent, messages) || !callbackMessages.every(message => validReturn(agent, message))) {
+        throw new LlmError('请由本人发起新的聊天消息后再使用 Gemini。', 'AGY_CHAT_ONLY');
+      }
+      // Consume before the first await. Even a failed or retried ACP step cannot replay it.
+      for (const message of callbackMessages) forgetReturn(returnIdOf(message));
+      const reviewOnly = callbackMessages.length > 0;
       const chat = chats.get(id) ?? { running: false };
       if (chat.running) throw new LlmError('请等本轮 Google 回复完成。', 'AGY_BUSY');
       if (chat.attemptedStep === step) throw new LlmError('这条消息已交给 Gemini，DSH 不会重复发送。', 'AGY_NO_RESEND');
@@ -267,23 +316,27 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
             : status === 'ready' ? 'model-unavailable' : 'connection-failed';
           throw asLocalError({ code });
         }
-        const { cwd, mode } = executionPolicy(agent, ctx);
+        const { cwd, mode: grantedMode } = executionPolicy(agent, ctx);
+        const mode = reviewOnly ? 'read-only' : grantedMode;
         const preset = composedPreset(ctx, agent);
         const persona = preset === WRITING_PRESET ? WRITING_PERSONA : undefined;
         if (!isLocalAgyPath(cwd) || !(await stat(cwd).catch(() => undefined))?.isDirectory()) throw Object.assign(new Error('Invalid cwd'), { code: 'workspace-unavailable' });
         const samePolicy = () => {
           const current = executionPolicy(agent, ctx);
-          return current.mode === mode && current.cwd === cwd && composedPreset(ctx, agent) === preset;
+          return current.mode === grantedMode && current.cwd === cwd && composedPreset(ctx, agent) === preset;
         };
         const blocks = await localPrompt(messages.flatMap(message => message.content), ctx.get('attachments'), signal);
         const toolsService = ctx.get('tools');
         const allowBridge = ['full', 'review'].includes(mode);
-        const useMcp = toolsService && allowedMcp.length && allowBridge;
+        // Child output is data to review, not authorization for another action.
+        const useMcp = !reviewOnly && toolsService && allowedMcp.length && allowBridge;
         if (useMcp) toolSet = await toolsService.resolve({ agent, signal, modelSelection: {
           provider: GOOGLE, model: request.model, reasoningEffort: request.reasoningEffort,
         } });
         const tools = useMcp ? agyMcpTools(ctx, agent, toolSet, allowedMcp) : new Map();
-        const builtinTools = allowBridge && config.gptBridge !== false ? agyGptBridgeTools(ctx) : new Map();
+        const fromOwnerPrompt = messages.some(message => typeof message.source?.rpcId === 'string' && !returnIdOf(message));
+        const builtinTools = !reviewOnly && allowBridge && config.gptBridge !== false
+          ? agyGptBridgeTools(ctx, { notify: fromOwnerPrompt ? returns.watch : undefined, cancelReturns }) : new Map();
         let dispatched = false;
         const mcpTurn = { agent, tools, builtinTools, toolSet, signal, canCall: () => dispatched && samePolicy() };
         const routeKey = JSON.stringify([mode, preset, persona, [...tools.keys(), ...builtinTools.keys()].sort()]);
@@ -363,12 +416,36 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
   }
 
   ctx.effect(() => ctx.llm.registerAdapter([GOOGLE], new LocalGoogle()));
+  // A queued callback must not turn into an ordinary prompt if the user
+  // changes models before it is claimed, nor wake Gemini after a restart.
+  ctx.on('agent/pre-step', ({ agent, messages, modelSelection }, next) => {
+    const invalid = messages.filter(message => returnIdOf(message)
+      && (modelSelection.provider !== GOOGLE || !validReturn(agent, message)));
+    if (!invalid.length) return next();
+    for (const message of invalid) {
+      const id = returnIdOf(message);
+      if (returnTickets.get(id)?.agent === agent) forgetReturn(id);
+    }
+    if (invalid.length === messages.length) return Promise.resolve({ kind: 'reject' });
+    return Promise.resolve(next()).then(decision => decision.kind === 'reject' ? decision : {
+      ...decision, messages: decision.messages.filter(message => !invalid.some(row => row.id === message.id)),
+    });
+  }, { global: true, prepend: true });
+  ctx.on('agent/inbox/discarded', ({ agent, message }) => {
+    const id = returnIdOf(message);
+    if (returnTickets.get(id)?.agent === agent) forgetReturn(id);
+  }, { global: true });
+  ctx.on('session/disposed', session => cancelReturns(session.id), { global: true });
   ctx.on('agent/disposed', ({ agent }) => {
+    cancelReturns(agent.id);
     const chat = chats.get(agent.id);
     if (chat) { chats.delete(agent.id); chat.cancel?.(); void closeChat(chat); }
   }, { global: true });
   ctx.effect(() => async () => {
     lifetime.abort();
+    await returns.drain();
+    // Withdraw any queued callbacks before the one-time gate is unloaded.
+    for (const [id, ticket] of returnTickets) revokeReturn(id, ticket);
     await Promise.allSettled([...chats.values()].map(closeChat));
     await runtime.dispose();
     chats.clear();
