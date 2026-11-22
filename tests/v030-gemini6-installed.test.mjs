@@ -5,14 +5,11 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { Context, Service } from '@deepseek-ai/cordis';
 import LlmRuntime from '@deepseek-ai/dsh-llm';
-import { agyGptBridgeTools } from '../src/agy-local-gpt-bridge.js';
-import { createTurnHost, ORDINARY_SELECTION } from './fixtures/agy-turn-host.mjs';
-import { openAgyMcp } from '../lib/agy-local-mcp.js';
 import { apply as applyAgyPlugin } from '../lib/agy-local-plugin.js';
 
 const textBlock = text => ({ type: 'text', text });
 
-test('Upgrade 1 (installed): agy-local-plugin mounts on loopback even with remote authorities and admits owner user messages without HTTP witness', async () => {
+test('Upgrade 1 (installed): agy-local-plugin mounts on loopback even with remote authorities with remote authorities enabled', async () => {
   const registered = [];
   const ctx = {
     webServer: { host: '127.0.0.1' },
@@ -42,111 +39,6 @@ test('Upgrade 1 (installed): agy-local-plugin mounts on loopback even with remot
     llm: { registerAdapter(providers, adapter) { nonLoopback.push({ providers, adapter }); return () => {}; } },
   }, {});
   assert.equal(nonLoopback.length, 0);
-});
-
-test('Upgrade 4 (installed): openAgyMcp serves built-in parallel GPT bridge tools over Streamable HTTP MCP', async t => {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-mcp-http-')));
-  t.after(() => rm(root, { recursive: true, force: true }));
-
-  const parentAgent = {
-    id: 'session-parent-mcp',
-    session: { header: { id: 'session-parent-mcp', cwd: root } },
-    model: { current: () => ({ provider: 'antigravity', model: 'gemini-3-flash' }) },
-  };
-  const controller = {
-    async list() {
-      return { items: [{ sessionId: parentAgent.id, cwd: root, running: true, updatedAt: 100, projections: { values: { title: 'Main' } } }] };
-    },
-    async create() { return { sessionId: 'session-child-1' }; },
-    async selectModel({ provider, model }) { return { selected: { provider, model } }; },
-    async rename({ title }) { return { title, seq: 1 }; },
-    async prompt() { return { accepted: true }; },
-    async wait() { return { reason: 'idle', state: { cursor: 2, active: true, running: false, queue: [], pendingInput: [] }, output: { records: [], truncated: false } }; },
-    async state() { return { cursor: 1, active: true, running: false, queue: [], pendingInput: [] }; },
-    async events() { return { cursor: 1, hasMore: false, records: [] }; },
-    async cancel() { return { accepted: true }; },
-  };
-  const services = new Map([
-    ['sessionController', controller],
-    ['llm', { listProviders: () => [{ id: 'codex' }], listModels: async () => [{ id: 'gpt-6.2-sol' }] }],
-  ]);
-  const ctx = { get: name => services.get(name) };
-  const builtinTools = agyGptBridgeTools(ctx);
-  const bridge = await openAgyMcp(ctx);
-  t.after(() => bridge.close());
-
-  const { url, headers } = bridge.servers[0];
-  const auth = { authorization: headers[0].value, 'content-type': 'application/json' };
-  const callRpc = async (method, params = {}) => {
-    const res = await fetch(url, { method: 'POST', headers: auth, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
-    assert.equal(res.status, 200);
-    return res.json();
-  };
-
-  let canCall = false;
-  bridge.setTurn({ agent: parentAgent, tools: new Map(), builtinTools, signal: new AbortController().signal, canCall: () => canCall });
-  const listResp = await callRpc('tools/list');
-  assert.deepEqual(listResp.result.tools.map(x => x.name).sort(), [
-    'dsh_delegate_gpt', 'dsh_gpt_list', 'dsh_gpt_status', 'dsh_gpt_stop', 'dsh_gpt_wait',
-  ]);
-  const denied = await callRpc('tools/call', { name: 'dsh_gpt_list', arguments: {} });
-  assert.equal(denied.error.code, -32602);
-
-  canCall = true;
-  const okList = await callRpc('tools/call', { name: 'dsh_gpt_list', arguments: {} });
-  assert.equal(okList.result.isError, false);
-  const parsed = JSON.parse(okList.result.content[0].text);
-  assert.equal(parsed.sessions[0].sessionId, parentAgent.id);
-
-  const blockedGoogle = await callRpc('tools/call', { name: 'dsh_delegate_gpt', arguments: { prompt: 'x', provider: 'antigravity' } });
-  assert.equal(blockedGoogle.result.isError, true);
-  assert.match(blockedGoogle.result.content[0].text, /Google Antigravity is forbidden/);
-});
-
-test('Parallel GPT placement (installed) records the workspace cwd and membership in real DSH sessions', async t => {
-  const h = await createTurnHost(t, { releasedReader: true });
-  const home = join(h.root, 'synthetic-home');
-  await mkdir(home);
-  const homeVar = process.platform === 'win32' ? 'USERPROFILE' : 'HOME';
-  const previousHome = process.env[homeVar];
-  process.env[homeVar] = home;
-  try {
-    const parent = h.agent(await h.create());
-    const registry = h.ctx.workspaceRegistry;
-    const delegate = agyGptBridgeTools(h.ctx).get('dsh_delegate_gpt');
-    // Only the fixture Codex adapter can receive the synthetic prompt.
-    const start = args => delegate.execute({ ...ORDINARY_SELECTION, prompt: 'Synthetic delegation', title: '[GPT] Build（GPT）', wait: true, ...args }, { agent: parent }, t.signal);
-    const explicit = await start({ cwd: `${h.cwd}/.` });
-    assert.equal(explicit.title, 'Build（GPT）');
-    assert.equal(explicit.reason, 'idle');
-    assert.equal(h.agent(explicit.sessionId).session.header.cwd, h.workspace.path);
-    assert.ok(h.workspace.sessionIds.includes(explicit.sessionId));
-
-    const nested = join(h.cwd, 'unregistered');
-    await mkdir(nested);
-    const grouped = await start({ cwd: nested });
-    const defaultPath = join(home, '.dsh', 'workspaces', 'GPT');
-    const gpt = await registry.resolveByPath(defaultPath);
-    assert.equal(gpt.title, 'GPT');
-    assert.equal(grouped.title, 'Build');
-    assert.equal(grouped.reason, 'idle');
-    assert.equal(h.agent(grouped.sessionId).session.header.cwd, gpt.path);
-    assert.equal((await h.ctx.sessionController.projections({ sessionId: grouped.sessionId }, t.signal)).values.title, 'Build');
-    assert.deepEqual(gpt.sessionIds, [grouped.sessionId]);
-    assert.equal(await registry.resolveByPath(nested), undefined, 'unmatched cwd is not registered itself');
-    assert.ok(!h.workspace.sessionIds.includes(grouped.sessionId));
-
-    const continued = await delegate.execute({ sessionId: grouped.sessionId, prompt: 'Synthetic follow-up', title: 'Do not rename', cwd: h.cwd, wait: true }, { agent: parent }, t.signal);
-    assert.equal(continued.sessionId, grouped.sessionId);
-    assert.equal(continued.reason, 'idle');
-    assert.deepEqual(gpt.sessionIds, [grouped.sessionId]);
-    assert.equal((await h.ctx.sessionController.projections({ sessionId: grouped.sessionId }, t.signal)).values.title, 'Build');
-    assert.deepEqual(h.selects, [], 'no default model preference was changed');
-    assert.deepEqual(h.ordinaryCalls.map(call => call.sessionId), [explicit.sessionId, grouped.sessionId, grouped.sessionId]);
-  } finally {
-    if (previousHome === undefined) delete process.env[homeVar];
-    else process.env[homeVar] = previousHome;
-  }
 });
 
 test('Upgrade 3 (installed): built Host discovers Codex ultrafast, sends service_tier="ultrafast", and exposes /speed for Desktop & DSH Go', async t => {

@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants, createWriteStream } from 'node:fs';
-import { lstat, mkdir, mkdtemp, open, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, open, readdir, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, relative, isAbsolute, resolve, sep } from 'node:path';
+import { dirname, join, relative, isAbsolute, resolve, sep } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { isLocalAgyPath, sameAgyPath } from './agy-launch.js';
 
@@ -176,6 +176,98 @@ const encloses = (directory, target) => {
   const path = relative(directory, target);
   return !isAbsolute(path) && path !== '..' && !path.startsWith(`..${sep}`);
 };
+
+function permissionPath(value, cwd) {
+  if (typeof value !== 'string' || !value || !isLocalAgyPath(cwd) || /[\p{Cc}\p{Cf}]/u.test(value)) return;
+  const path = process.platform === 'win32' ? value.replace(/^\/(?=[a-z]:[\\/])/iu, '') : value;
+  if (process.platform === 'win32') {
+    const driveAbsolute = /^[a-z]:[\\/]/iu.test(path);
+    if ((!driveAbsolute && /^[\\/]/u.test(path)) || (driveAbsolute ? path.slice(2) : path).includes(':')) return;
+    // Windows can interpret trailing spaces/dots as another spelling (including a traversal).
+    if (path.split(/[\\/]/u).some(part => part !== '.' && /[. ]$/u.test(part))) return;
+  }
+  // Never collapse a raw traversal across a link: some platform file APIs resolve it physically, not lexically.
+  if (path.split(process.platform === 'win32' ? /[\\/]/u : '/').includes('..')) return;
+  const absolute = resolve(cwd, path);
+  if (isLocalAgyPath(absolute)) return absolute;
+}
+
+/** Capture an exact, ordinary local file identity; neither directories nor aliases create grants. */
+export async function agyReadOnlyRef(path) {
+  const entry = await ordinaryEntry(path, 'file');
+  if (!entry) return;
+  return Object.freeze({ path: resolve(path), stamp: stamp(entry) });
+}
+
+/** Compare exact spelling even when the file was removed or changed; useful for denying writes. */
+export function isAgyReadOnlyRefPath(value, cwd, grant) {
+  const path = permissionPath(value, cwd);
+  return Boolean(path && grant && sameAgyPath(path, grant.path));
+}
+
+/** Recheck the same spelling and identity; a renamed/replaced file or alias needs a fresh grant. */
+export async function matchesAgyReadOnlyRef(value, cwd, grant) {
+  const path = permissionPath(value, cwd);
+  if (!path || !grant || !sameAgyPath(path, grant.path)) return false;
+  try { return (await agyReadOnlyRef(path))?.stamp === grant.stamp; }
+  catch { return false; }
+}
+
+/** Additional DSH writable roots are explicit ordinary directories, never aliases. */
+export async function withinAgyWritableRoots(value, cwd, workspaceRoot, additionalWritableRoots = []) {
+  const path = permissionPath(value, cwd);
+  if (!path || !Array.isArray(additionalWritableRoots)) return false;
+  try {
+    const candidates = [];
+    if (isLocalAgyPath(workspaceRoot)) {
+      const workspace = await realpath(workspaceRoot);
+      if (isLocalAgyPath(workspace) && (await stat(workspace)).isDirectory()) candidates.push([workspaceRoot, workspace]);
+    }
+    for (const root of additionalWritableRoots) {
+      if (!await ordinary(root, 'dir')) return false;
+      candidates.push([root, root]);
+    }
+    // An external symlink into the workspace is also unsafe to delete: check
+    // the reported spelling as well as the canonical future path.
+    const roots = candidates.filter(([spelling, canonical]) => encloses(spelling, path) || encloses(canonical, path));
+    if (!roots.length) return false;
+    const suffix = [];
+    let parent = path;
+    for (;;) {
+      try {
+        const resolved = await realpath(parent);
+        const target = resolve(resolved, ...suffix);
+        return isLocalAgyPath(target) && roots.some(([, root]) => encloses(root, target));
+      } catch (error) {
+        if (!absent(error)) return false;
+        // ENOENT for a dangling link is not a missing path component we may grant.
+        if (await lstat(parent).then(() => true, error => { if (absent(error)) return false; throw error; })) return false;
+        const ancestor = dirname(parent);
+        if (ancestor === parent) return false;
+        suffix.unshift(relative(ancestor, parent));
+        parent = ancestor;
+      }
+    }
+  } catch { return false; }
+}
+
+/** Atomically publish the cleaned transcript at a file in the existing private session directory. */
+export async function writeAgyHistoryArchive(path, body, signal) {
+  signal?.throwIfAborted();
+  if (!isLocalAgyPath(path) || !await ordinary(dirname(path), 'dir')) return;
+  const existing = await lstat(path).catch(error => { if (!absent(error)) throw error; });
+  if (existing && !existing.isFile()) return;
+  const temporary = join(dirname(path), `.dsh-history-${randomUUID()}.tmp`);
+  const handle = await open(temporary, 'wx', 0o600);
+  try {
+    try { await handle.writeFile(body, { encoding: 'utf8', signal }); }
+    finally { await handle.close(); }
+    signal?.throwIfAborted();
+    if (!await ordinary(temporary, 'file')) return;
+    await rename(temporary, path);
+    return await agyReadOnlyRef(path);
+  } finally { await unlink(temporary).catch(error => { if (!absent(error)) throw error; }); }
+}
 
 const defaultAgyRoots = parent => [dshHomePath(parent), dshHomePath(parent, 'profiles', 'desktop')]
   .map(home => join(home, 'plugin-data', 'subscriptions-enhanced', 'agy'));

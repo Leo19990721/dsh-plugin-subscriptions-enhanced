@@ -31,8 +31,7 @@ host = replaceOnce(host, 'const Config = z.object({', `const Config = z.object({
 		proxy: z.string().default("auto").description("auto: use the enabled subscription proxy, then environment or Windows system proxy; direct or empty: no proxy; otherwise a proxy URL."),
 		dataDir: z.string().description("Optional absolute path for the persistent DSH-owned Google CLI state."),
 		agentsFile: z.string().description("Optional absolute path to global instructions; empty disables loading them."),
-		mcp: z.array(z.string().pattern(/^(?:[*]|[A-Za-z0-9_-]{1,32})$/)).default(["*"]).description("DSH MCP server allowlist (remote includes native Remote tools); * discovers enabled servers, [] disables their bridge."),
-		gptBridge: z.boolean().default(true).description("Allow Gemini to delegate and coordinate parallel non-Google DSH sessions via built-in MCP tools.")
+		mcp: z.array(z.string().pattern(/^(?:[*]|[A-Za-z0-9_-]{1,32})$/)).default(["*"]).description("DSH MCP server allowlist (remote includes native Remote tools); * discovers enabled servers, [] disables their bridge.")
 	}),`);
 host = replaceOnce(host, 'function apply(ctx, config) {', 'function apply(ctx, config) {\n\tctx.plugin(writing, { localGoogle: true });\n\tctx.plugin(agy, config.google);');
 host = replaceOnce(host, 'const name = "dsh-plugin-subscriptions";', `const name = ${JSON.stringify(packageName)};`);
@@ -46,7 +45,7 @@ host = host.replaceAll('Settings → Subscriptions', 'Settings → Models')
   .replaceAll('Settings > Subscriptions', 'Settings > Models').replaceAll('设置 → 订阅', '设置 → 模型');
 client = retireAntigravityClient(patchCodexUltrafastClient(patchModelsSettings(client, replaceOnce), replaceOnce));
 client = replaceOnce(client, 'registerEnhancedModelsSettings(ctx, connection, t, SubscriptionsSection);',
-  'const quotaState = installAgyClient(ctx);\n\tconst agyT = ctx.locale.bind(agySection);\n\tctx.inject(["modelDirectories"], (scope) => registerAgyTeamMenu(scope, react.createElement));\n\tregisterEnhancedModelsSettings(ctx, connection, t, SubscriptionsSection, quotaState);');
+  'const quotaState = installAgyClient(ctx);\n\tconst agyT = ctx.locale.bind(agySection);\n\tregisterEnhancedModelsSettings(ctx, connection, t, SubscriptionsSection, quotaState);');
 client = replaceOnce(client, `			currentModel: createCurrentModelReader(models, sessionId)
 		})
 	}, SubscriptionUsageBadge));`, `			currentModel: createCurrentModelReader(models, sessionId),
@@ -61,7 +60,7 @@ client = replaceOnce(client, 'function SubscriptionUsageBadge({ rpc, currentMode
 client = replaceOnce(client, 'const [lastSubscription, setLastSubscription] = (0, react.useState)(void 0);',
   'const [lastSubscription, setLastSubscription] = legacySelection;');
 const clientSources = await Promise.all(['badge-compat.js', 'models-settings-ui.js', 'agy-client.js', 'agy-quota-state.js',
-  'agy-usage-dock.js', 'agy-team-menu.js'].map(async name =>
+  'agy-usage-dock.js'].map(async name =>
   (await readFile(join(root, 'src', name), 'utf8')).replace(/^export (?=function )/gm, '')));
 client = replaceOnce(client, 'return module.exports; } });', [...clientSources, 'return module.exports; } });'].join('\n'));
 client = client.replace('//# sourceMappingURL=client.js.map', '');
@@ -69,10 +68,10 @@ await mkdir(join(root, 'lib'), { recursive: true });
 await writeFile(join(root, 'lib/index.js'), host);
 await writeFile(join(root, 'lib/client.js'), client);
 for (const name of ['writing-policy.js', 'writing-host.js', 'agy-local-plugin.js', 'agy-local-host.js', 'agy-local-runtime.js',
-  'agy-local-context.js', 'agy-local-progress.js', 'agy-local-proxy.js', 'agy-local-mcp.js', 'agy-local-gpt-bridge.js', 'agy-local-storage.js', 'agy-local-persona.js',
+  'agy-local-context.js', 'agy-local-progress.js', 'agy-local-proxy.js', 'agy-local-mcp.js', 'agy-local-lineage.js', 'agy-local-storage.js', 'agy-local-persona.js',
   'agy-ingress.js', 'agy-identity.js', 'agy-launch.js', 'agy-acp-client.js', 'agy-session.js', 'agy-turn-session.js', 'agy-turn-options.js']) {
   await copyFile(join(root, 'src', name), join(root, 'lib', name));
 }
 await copyFile(join(upstream, 'LICENSE'), join(root, 'LICENSE'));
-await writeFile(join(root, 'lib/upstream.json'), JSON.stringify({ name: manifest.name, version: manifest.version, hostSha256, clientSha256, patches: ['Remove legacy Antigravity transport and sign-in', 'Route the Google subscription to local official ACP', 'Codex ultrafast service_tier and /speed command', 'Parallel GPT session MCP bridge for Gemini', 'Host-only writing policy for ordinary DSH models', 'DSH quota badge positioning compatibility', 'Native Models footer for subscription management', 'local package identity'] }, null, 2) + '\n');
+await writeFile(join(root, 'lib/upstream.json'), JSON.stringify({ name: manifest.name, version: manifest.version, hostSha256, clientSha256, patches: ['Remove legacy Antigravity transport and sign-in', 'Route the Google subscription to local official ACP', 'Codex ultrafast service_tier and /speed command', 'Native subagent MCP tools for Gemini', 'Host-only writing policy for ordinary DSH models', 'DSH quota badge positioning compatibility', 'Native Models footer for subscription management', 'local package identity'] }, null, 2) + '\n');
 console.log(`Built from ${manifest.name}@${manifest.version}; Google subscription uses official agy ACP.`);

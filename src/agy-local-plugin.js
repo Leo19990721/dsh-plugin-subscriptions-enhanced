@@ -3,23 +3,24 @@ import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
 import { AGY_API, AGY_LOOPBACK, exactKeys, installAgyWitness, readAgyEnvelope } from './agy-ingress.js';
 import { GOOGLE, mountLocalGoogle } from './agy-local-host.js';
 import { createLocalAgy } from './agy-local-runtime.js';
+import { installAgyLineage } from './agy-local-lineage.js';
 
 export const name = 'subscriptions-enhanced-google-local';
 export const inject = ['llm', 'agents', 'connection', 'webServer', 'tools'];
 const headers = { 'cache-control': 'no-store' };
-const ownerUser = message => message?.source?.kind === 'user'
-  && (!message.source.principal || message.source.principal.kind === 'owner');
+
 
 export function apply(ctx, config = {}, makeRuntime = createLocalAgy) {
   const enabled = AGY_LOOPBACK.test(ctx.webServer.host ?? '');
-  const witness = installAgyWitness(ctx);
+  const witness = installAgyWitness(ctx, { nativeActions: true });
   let google;
   if (enabled) {
     const home = resolveDshHome();
+    const authorize = installAgyLineage(ctx, witness.isLocalSubmission);
     google = mountLocalGoogle(ctx, config, makeRuntime({ ...config,
       dataDir: config.dataDir || join(process.env.DSH_PROFILE_DIR || home, 'plugin-data', 'subscriptions-enhanced', 'agy'),
       agentsFile: config.agentsFile ?? join(home, 'AGENTS.md'),
-    }), (_agent, messages) => messages.length > 0 && messages.every(ownerUser));
+    }), authorize);
   }
   ctx.connection.fetch.register({ path: AGY_API, methods: ['POST'], requestBody: 'streaming', async fetch(request) {
     if (!witness.take('bridge') || request.signal.aborted) return new Response(null, { status: 403, headers });

@@ -7,7 +7,8 @@ import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { agyProxyEnv } from '../src/agy-local-proxy.js';
-import { localHistory, localPrompt } from '../src/agy-local-context.js';
+import { localHistory, localPrompt, prepareLocalHistory } from '../src/agy-local-context.js';
+import { isAgyReadOnlyRefPath, matchesAgyReadOnlyRef, withinAgyWritableRoots } from '../src/agy-local-storage.js';
 import { agyProgress } from '../src/agy-local-progress.js';
 import { createLocalAgy } from '../src/agy-local-runtime.js';
 import { verifiedAgyExecutable } from '../src/agy-launch.js';
@@ -88,6 +89,51 @@ test('automatic Google proxy reads the upstream subscriptions JSON contract and 
   }
   await writeFile(file, JSON.stringify({ enabled: true, url: 'http://updated.invalid:8888', bypass: [] }));
   assert.equal((await agyProxyEnv('auto', parent, os)).HTTPS_PROXY, 'http://updated.invalid:8888');
+});
+
+test('each ACP launch fingerprints the current exact child proxy environment', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-agy-proxy-launch-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dshHome = join(root, 'home'), proxyDir = join(dshHome, 'plugins', 'subscriptions');
+  await mkdir(proxyDir, { recursive: true });
+  const saved = join(proxyDir, 'proxy.json');
+  const update = (password, bypass = []) => writeFile(saved, JSON.stringify({ enabled: true, url: 'http://proxy.invalid:3128',
+    username: 'synthetic', password, bypass }));
+  const spawns = [];
+  let resolutions = 0;
+  const runtime = createLocalAgy({ proxy: 'auto', dataDir: join(root, 'data') }, {
+    parentEnv: { DSH_HOME: dshHome, SystemRoot: root, HTTPS_PROXY: 'https://fallback.invalid:8080' },
+    verify: () => join(root, 'agy.exe'),
+    async resolveProxy(config, env) { resolutions++; return agyProxyEnv(config, env); },
+    makeTransport({ env }) {
+      spawns.push(env);
+      return { start: async () => ({}), close: async () => {}, async request() {
+        return { sessionId: randomUUID(), configOptions: [{ type: 'select', name: 'Model', id: 'model', category: 'model',
+          currentValue: 'fixture', options: [{ value: 'fixture', name: 'Fixture' }] }] };
+      } };
+    },
+  });
+  t.after(() => runtime.dispose());
+  await update('fixture1');
+  const original = await runtime.proxyFingerprint(signal);
+  assert.match(original, /^[a-f0-9]{64}$/u);
+  assert.equal(spawns.length, 0);
+  await update('fixture2');
+  const session = await runtime.open(signal, { id: 'fixture', cwd: root });
+  assert.equal(resolutions, 2, 'the launch does not reuse a prior observation or resolve a second time');
+  assert.equal(spawns.at(-1).HTTPS_PROXY, 'http://synthetic:fixture2@proxy.invalid:3128');
+  assert.notEqual(session.proxyFingerprint, original);
+  assert.equal(session.proxyFingerprint, await runtime.proxyFingerprint(signal));
+  await session.close();
+  await update('fixture2', ['.bypass.invalid']);
+  assert.notEqual(await runtime.proxyFingerprint(signal), session.proxyFingerprint, 'bypass-only change invalidates launches');
+  await writeFile(saved, '{"enabled":false}');
+  const catalog = await runtime.open(signal);
+  assert.equal(spawns.at(-1).HTTPS_PROXY, 'https://fallback.invalid:8080');
+  assert.equal(catalog.proxyFingerprint, await runtime.proxyFingerprint(signal));
+  assert.notEqual(catalog.proxyFingerprint, session.proxyFingerprint);
+  await catalog.close();
+  await assert.rejects(runtime.proxyFingerprint(AbortSignal.abort()), { name: 'AbortError' });
 });
 
 test('quota reads both fixed commands concurrently via the verified CLI', async () => {
@@ -243,7 +289,7 @@ test('real cwd, stable home and official ID survive CLI upgrade and policy chang
   t.after(() => rm(root, { recursive: true, force: true }));
   const dataDir = join(root, 'runtime'), agentsFile = join(root, 'AGENTS.md');
   await writeFile(agentsFile, '# Synthetic local rules');
-  const parentEnv = { ...process.env, DSH_HOME: join(root, 'dsh-home') };
+  const parentEnv = { DSH_HOME: join(root, 'dsh-home'), SystemRoot: process.env.SystemRoot ?? root };
   const spawns = [], calls = [];
   const officialId = randomUUID();
   const configOptions = [{ type: 'select', name: 'Model', id: 'model', category: 'model', currentValue: 'gemini-fixture',
@@ -298,6 +344,16 @@ test('real cwd, stable home and official ID survive CLI upgrade and policy chang
   assert.deepEqual(await settings(), { useG1Credits: false, agentMode: '', toolPermission: 'request-review',
     allowNonWorkspaceAccess: false, enableTerminalSandbox: true, permissions: { deny, allow, ask: ['write_file(*)'] } });
   await runtime.dispose();
+  runtime = createLocalAgy({ dataDir, agentsFile }, dependencies);
+  for (const mode of ['read-only', 'workspace-write']) {
+    const chat = await runtime.open(signal, { id, cwd: root, mode, officialId, onPermission() {} });
+    assert.equal(spawns.at(-1).permissionMode, 'sandbox');
+    assert.deepEqual(await settings(), { useG1Credits: false, agentMode: '', toolPermission: 'request-review',
+      allowNonWorkspaceAccess: true, enableTerminalSandbox: true, permissions: { deny: mode === 'read-only' ? [...deny, 'write_file(*)'] : deny,
+        allow, ask: mode === 'read-only' ? ['read_file(*)'] : ['read_file(*)', 'write_file(*)'] } });
+    await chat.close();
+  }
+  await runtime.dispose();
 });
 
 test('private CLI homes copy user DSH skills with resources; refresh updates and removals without following links', async t => {
@@ -317,7 +373,7 @@ test('private CLI homes copy user DSH skills with resources; refresh updates and
   await writeFile(join(skills, 'flat.md'), 'flat skill');
   await writeFile(join(skills, '.system', 'bundled', 'SKILL.md'), 'bundled');
   const spawns = [];
-  const mkdirDep = { parentEnv: { ...process.env, DSH_HOME: dshHome, SystemRoot: process.env.SystemRoot ?? root },
+  const mkdirDep = { parentEnv: { DSH_HOME: dshHome, SystemRoot: process.env.SystemRoot ?? root },
     verify: () => join(root, 'agy.exe'), resolveProxy: () => ({}), makeTransport({ env }) {
       spawns.push(env);
       return { start: async () => ({}), close: async () => {},
@@ -475,20 +531,54 @@ test('cwd context merges ordinary local rules and skills, and fingerprints only 
   if (!linkedRules) t.diagnostic('File symlink creation requires Windows privileges; tested a non-ordinary AGENTS directory instead.');
 });
 
-test('ACP input keeps text over 64 KiB, attachment links, and verified image bytes in order', async () => {
+test('ACP input keeps long text, verified file links, and image bytes in order', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-agy-attachments-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
   const long = '中文长文'.repeat(20_000);
   const image = { mediaType: 'image/png', height: 1, width: 1, bytes: 3 };
-  const file = { name: '合成.txt' };
-  const filename = join(tmpdir(), file.name);
-  const blocks = await localPrompt([text(long), { type: 'file', attachment: file }, { type: 'image', attachment: image }], {
+  const file = { name: '合成.txt', bytes: 3 };
+  const filename = join(root, file.name), neighbor = join(root, 'neighbor.txt');
+  await writeFile(filename, 'abc');
+  await writeFile(neighbor, 'xyz');
+  const refs = [];
+  let verified = false;
+  const attachments = {
     fileHostPath(ref) { assert.equal(ref, file); return filename; },
+    async *readFileStream(ref, control) {
+      assert.equal(ref, file);
+      assert.equal(control, signal);
+      yield Buffer.from('abc');
+      verified = true;
+    },
     async readImage(ref) { assert.equal(ref, image); return { ref, data: Buffer.from('abc') }; },
-  }, signal);
+  };
+  const options = { onReadOnlyRef: ref => { assert.ok(verified); refs.push(ref); } };
+  const blocks = await localPrompt([text(long), { type: 'file', attachment: file, path: neighbor }, { type: 'image', attachment: image }],
+    attachments, signal, options);
   assert.deepEqual(blocks[0], text(long));
   assert.equal(blocks[1].type, 'resource_link');
   assert.match(blocks[1].uri, /^file:\/\//);
   assert.ok(blocks[2].text.includes(JSON.stringify(filename)));
   assert.deepEqual(blocks[3], { type: 'image', mimeType: 'image/png', data: 'YWJj' });
+  assert.equal(refs.length, 1);
+  assert.equal(refs[0].path, filename);
+  assert.equal(await matchesAgyReadOnlyRef(filename, root, refs[0]), true);
+  assert.equal(await matchesAgyReadOnlyRef(file.name, root, refs[0]), true);
+  assert.equal(await matchesAgyReadOnlyRef(root, root, refs[0]), false);
+  assert.equal(await matchesAgyReadOnlyRef(neighbor, root, refs[0]), false);
+  const alias = join(root, 'alias');
+  await symlink(root, alias, 'junction');
+  assert.equal(await matchesAgyReadOnlyRef(join(alias, file.name), root, refs[0]), false);
+  await assert.rejects(localPrompt([{ type: 'file', attachment: file }], { ...attachments,
+    fileHostPath: () => join(alias, file.name) }, signal, options), { code: 'attachment-unavailable' });
+  await assert.rejects(localPrompt([{ type: 'file', attachment: file }], { ...attachments,
+    async *readFileStream() { yield Buffer.from('abc'); throw new Error('fixture integrity failure at EOF'); } }, signal, options),
+  { code: 'attachment-unavailable' });
+  assert.equal(refs.length, 1, 'never grants a corrupt object or an alias');
+  await writeFile(filename, 'changed bytes');
+  assert.equal(await matchesAgyReadOnlyRef(filename, root, refs[0]), false);
+  assert.equal(isAgyReadOnlyRefPath(filename, root, refs[0]), true, 'replacement still must not be writable via this grant');
+  assert.equal(isAgyReadOnlyRefPath(neighbor, root, refs[0]), false);
 });
 
 test('history keeps recent user/assistant body only, bounded independently from the current text', () => {
@@ -509,6 +599,80 @@ test('history keeps recent user/assistant body only, bounded independently from 
   const result = localHistory({ snapshotEvents: () => events }, 20, 1);
   assert.match(result, /middle message.*new answer/);
   assert.doesNotMatch(result, /old user|AUTOMA|interrupted user|INTERNAL|current prompt/);
+});
+
+test('history respects shadowed compaction node IDs and registers only a truncated archive file', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-agy-history-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const events = [];
+  const append = (type, data, surfaceOp) => {
+    const seq = events.length + 1;
+    events.push({ seq, type, data, surfaceOp });
+    return seq;
+  };
+  const turn = (number, message, reply) => {
+    append('turn/start', { turn: number });
+    const user = append('user/message', { source: { kind: 'user' }, content: [text(message)] }, 'append');
+    const assistant = append('assistant/message', { turn: number, message: { content: [text(reply), { type: 'reasoning', text: 'PRIVATE THOUGHT' }] } }, 'append');
+    append('turn/end', { turn: number, reason: { kind: 'completed' } });
+    return [user, assistant];
+  };
+  const old = turn(1, 'old question', 'old reply');
+  const first = append('compaction/summary', { summary: [text('first summary')], shadowedSeqs: old });
+  const surviving = turn(2, 'hidden question', 'remaining reply');
+  append('compaction/summary', { summary: [text('latest summary')], shadowedRange: { start: first, end: surviving[0] },
+    shadowedSeqs: [surviving[0]] });
+  const session = { snapshotEvents: () => events };
+  const before = () => events.length + 1;
+  const archivePath = join(root, 'dsh-history-archive.md'), grants = [];
+  const opts = { archivePath, signal, onReadOnlyRef: ref => grants.push(ref) };
+  const inline = await prepareLocalHistory(session, before(), 0, opts);
+  assert.match(inline, /latest summary.*remaining reply/);
+  assert.doesNotMatch(inline, /first summary|old question|old reply|hidden question|PRIVATE THOUGHT|archived at/);
+  assert.equal(grants.length, 0);
+  await assert.rejects(lstat(archivePath), { code: 'ENOENT' });
+  // A single shortened message, even when its turn fits, is still a length truncation.
+  const long = 'start of huge reply ' + 'A'.repeat(22_000) + ' middle omitted marker ' + 'B'.repeat(22_000);
+  turn(3, 'unabridged question', long);
+  const handoff = await prepareLocalHistory(session, before(), 0, opts);
+  assert.ok(handoff.includes(JSON.stringify(archivePath)));
+  assert.match(handoff, /shortened/);
+  assert.doesNotMatch(handoff, /middle omitted marker|old question|PRIVATE THOUGHT/);
+  assert.equal(grants.length, 1);
+  assert.equal(await matchesAgyReadOnlyRef(archivePath, root, grants[0]), true);
+  assert.equal(await matchesAgyReadOnlyRef(root, root, grants[0]), false);
+  const archive = await readFile(archivePath, 'utf8');
+  assert.match(archive, /latest summary/);
+  assert.match(archive, /old question/);
+  assert.match(archive, /middle omitted marker/);
+  assert.doesNotMatch(archive, /PRIVATE THOUGHT/);
+  await assert.rejects(prepareLocalHistory(session, before(), 0, { ...opts, signal: AbortSignal.abort() }), { name: 'AbortError' });
+  const linkedDir = join(root, 'link');
+  await symlink(root, linkedDir, 'junction');
+  const fallback = await prepareLocalHistory(session, before(), 0, { ...opts, archivePath: join(linkedDir, 'unsafe.md') });
+  assert.doesNotMatch(fallback, /archived at/);
+  await assert.rejects(lstat(join(root, 'unsafe.md')), { code: 'ENOENT' });
+  assert.equal(grants.length, 1);
+});
+
+test('explicit writable roots cover only real directories and contained output paths', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-agy-writable-roots-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const workspace = join(root, 'workspace'), extra = join(root, 'extra'), outside = join(root, 'external');
+  for (const dir of [workspace, extra, outside]) await mkdir(dir);
+  const junction = join(extra, 'escape'), extraAlias = join(root, 'extra-alias'), incoming = join(outside, 'workspace-alias');
+  await symlink(outside, junction, 'junction');
+  await symlink(extra, extraAlias, 'junction');
+  await symlink(workspace, incoming, 'junction');
+  assert.equal(await withinAgyWritableRoots('new.txt', workspace, workspace), true);
+  const output = join(extra, 'nested', 'new.txt');
+  assert.equal(await withinAgyWritableRoots(output, workspace, workspace), false);
+  assert.equal(await withinAgyWritableRoots(output, workspace, workspace, [extra]), true);
+  assert.equal(await withinAgyWritableRoots(join(extra, 'escape', 'new.txt'), workspace, workspace, [extra]), false);
+  assert.equal(await withinAgyWritableRoots(join(outside, 'workspace-alias', 'new.txt'), workspace, workspace, [extra]), false);
+  assert.equal(await withinAgyWritableRoots(`escape/../new.txt`, extra, workspace, [extra]), false);
+  assert.equal(await withinAgyWritableRoots(join(extraAlias, 'new.txt'), workspace, workspace, [extraAlias]), false);
+  assert.equal(await withinAgyWritableRoots(output, workspace, workspace, [join(root, 'missing')]), false);
 });
 
 test('reasoning and tool progress are display-only with final status and a tool-only receipt', () => {

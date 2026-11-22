@@ -100,7 +100,7 @@ function fakeSessionFactory({ root, cwd, configurations, acpConfig, acpCalls, ac
           const ask = (permissionId, toolCall, options = [{ kind: 'allow_once', optionId: 'allow' }, { kind: 'reject_once', optionId: 'deny' }]) => child.send({
             id: permissionId, method: 'session/request_permission', params: { sessionId: id, toolCall, options },
           });
-          if (prompt) return prompt({ id: rpcId, sessionId: id, params, reply, update, delta, ask, disconnect: child.disconnect, error });
+          if (prompt) return prompt({ id: rpcId, sessionId: id, params, mcpServers, reply, update, delta, ask, disconnect: child.disconnect, error });
           update('合成 Antigravity 回复');
           return reply();
         }
@@ -122,6 +122,7 @@ export async function createTurnHost(t, {
   root, acpPrompt, beforeFlush, afterLedgerWrite, toolStep, ordinaryPrompt, withUploads = false, apis = {}, releasedReader = false,
   mountSubscription, acpConfig: initialAcpConfig = mountSubscription ? subscriptionConfig : baseConfig, desktopRequests = false, withCompaction = false,
   withRetry = false, withCheckpoint = false, withWorkingDirectory = false, localPermissions, localAttachments = false, localMcpMarker,
+  nativeSubagents, ordinaryStream,
 } = {}) {
   if (releasedReader && withUploads) throw new Error('Use the unmodified reader without fixture upload injection');
   if (mountSubscription && !releasedReader) throw new Error('Mount the ordinary subscription adapter with the unmodified runtime');
@@ -204,12 +205,22 @@ export async function createTurnHost(t, {
         currentSelection: () => selects.at(-1) ?? ORDINARY_SELECTION,
         async saveSelection(selection) { selects.push({ ...selection }); },
       });
-      if (withWorkingDirectory) scope.provide('workingDirectory', {
-        get: session => typeof apis.workingDirectory === 'function' ? apis.workingDirectory(session)
-          : (apis.workingDirectory ?? session.header.cwd ?? cwd),
-      });
+      if (withWorkingDirectory || nativeSubagents) {
+        const saved = new WeakMap();
+        const get = session => saved.get(session) ?? (typeof apis.workingDirectory === 'function'
+          ? apis.workingDirectory(session) : (apis.workingDirectory ?? session.header.cwd ?? cwd));
+        scope.provide('workingDirectory', {
+          get,
+          async ensure(agent, signal) { signal?.throwIfAborted(); return get(agent.session); },
+          async set(agent, directory, signal) {
+            signal?.throwIfAborted();
+            assert.equal(directory, cwd, 'native child stays within the synthetic workspace');
+            saved.set(agent.session, directory);
+          },
+        });
+      }
       if (localPermissions) {
-        scope.provide('sandboxPolicy', { resolve: ({ session }) => ({ mode: localPermissions.mode ?? 'danger-full-access', workspaceRoot: session.header.cwd ?? cwd }) });
+        scope.provide('sandboxPolicy', { resolve: ({ session }) => ({ mode: localPermissions.mode ?? 'danger-full-access', workspaceRoot: session.header.cwd ?? cwd, additionalWritableRoots: localPermissions.additionalWritableRoots ?? [] }) });
         if (!localPermissions.native) scope.provide('approval', { overrideOf: () => localPermissions.approval ?? 'never', request: input => localPermissions.request?.(input) ?? 'rejected' });
       }
       if (!hasUploads) {
@@ -235,10 +246,12 @@ export async function createTurnHost(t, {
     await mount(loader.Loader);
     await mount(registry.TypertRegistry);
     const uploadTypes = hasUploads ? await import('@deepseek-ai/dsh-client-file-upload/typert') : undefined;
+    const subagentTypes = nativeSubagents ? await import('@deepseek-ai/dsh-subagent/typert') : undefined;
     await mount({ inject: ['typert'], apply(scope) {
       scope.typert.register(native.TYPERT);
       scope.typert.register(workspaceTypes.TYPERT);
       if (uploadTypes) scope.typert.register(uploadTypes.TYPERT);
+      if (subagentTypes) scope.typert.register(subagentTypes.TYPERT);
     } });
     await mount(sessionMod.SessionStore);
     await mount(projections.SessionProjectionRegistry);
@@ -269,6 +282,15 @@ export async function createTurnHost(t, {
     await mount(tools.ToolsService, {});
     await mount(toolExecutor);
     await mount(access.default);
+    let guest;
+    if (nativeSubagents) {
+      guest = connection.createPeer({ principal: { kind: 'fixture-guest' }, interactions: 'none' });
+      await mount({ inject: ['remoteAccess'], apply(scope) {
+        scope.remoteAccess.registerPolicy('fixture-guest', { bindings: () => apis.guestSessionId ? [{
+          resource: { kind: 'session', id: apis.guestSessionId }, role: { actions: ['session/prompt'] },
+        }] : [] });
+      } });
+    }
     if (hasUploads) {
       const [{ FileUploads }, { LocalAttachmentStore }, { CommandRuntime }] = await Promise.all([
         withUploads ? loadTurnUploadFixture(process.env.DSH_INSTALL_DIR) : import('@deepseek-ai/dsh-client-file-upload'),
@@ -360,6 +382,7 @@ export async function createTurnHost(t, {
           assert.equal(options.model, ORDINARY_SELECTION.model);
           const callCount = ordinaryCalls.length;
           await ordinaryPrompt?.(options, callCount);
+          if (ordinaryStream) { yield* ordinaryStream(options, callCount); return; }
           if (toolStep && callCount === 1) {
             const block = { type: 'tool-call', id: 'fixture-call-1', name: 'fixture_counter', arguments: '{}' };
             yield { type: 'block-start', index: 0, blockType: 'tool-call' };
@@ -385,6 +408,19 @@ export async function createTurnHost(t, {
     await mount(native.AgentLoop, { agents: [], maxParallelToolCalls: 1 });
     await mount(native.SessionController, { nativeOpen: false });
     await mount(workspaceController.WorkspaceController);
+    if (nativeSubagents) {
+      assert.equal(releasedReader, true, 'native subagents use the unmodified installed loop');
+      const [subagents, spawn, fork, delegate, control] = await Promise.all([
+        'dsh-subagent', 'dsh-subagent-spawn-in-process', 'dsh-subagent-fork-in-process',
+        'dsh-tool-subagent', 'dsh-tool-subagent-control',
+      ].map(name => import(`@deepseek-ai/${name}`)));
+      await mount(subagents.SubagentRuntime, {});
+      await mount(spawn, { providerName: 'spawn' });
+      await mount(fork, { providerName: 'fork' });
+      await mount(delegate, { provider: 'spawn', toolName: 'subagent', ...nativeSubagents.spawn });
+      await mount(delegate, { provider: 'fork', toolName: 'subagent_fork', ...nativeSubagents.fork });
+      await mount(control, {});
+    }
     if (withRetry) await mount(await import('@deepseek-ai/dsh-llm-retry'), {});
     if (withCheckpoint) await mount(await import('@deepseek-ai/dsh-session-checkpoint-policy'));
     if (mountSubscription) await mount({ name: 'synthetic subscription binding',
@@ -484,7 +520,8 @@ export async function createTurnHost(t, {
       return response.json();
     }
     function invoke(namespace, method, args = {}, who = 'owner') {
-      const peer = who === 'browser' ? connection.browserPeer : { principal: { kind: 'owner' }, signal: t.signal };
+      const peer = who === 'browser' ? connection.browserPeer : who === 'guest' ? guest : { principal: { kind: 'owner' }, signal: t.signal };
+      if (who === 'guest') assert.ok(peer, 'guest Peer requires the isolated native subagent fixture');
       return ctx.typertGateway.invoke({ namespace, method, args, peer });
     }
     const agent = id => ctx.agents.get(id);

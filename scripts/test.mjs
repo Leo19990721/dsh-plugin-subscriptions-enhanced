@@ -16,7 +16,7 @@ const files = ['tests/client.test.mjs', 'tests/release.test.mjs', 'tests/writing
 if (installed) files.push('tests/integration.test.mjs', 'tests/writing-runtime.test.mjs', 'tests/subscriptions-upstream.test.mjs',
   'tests/agy-native-agent.test.mjs', 'tests/agy-native-cache.test.mjs', 'tests/agy-native-turn.test.mjs', 'tests/agy-turn-boundaries.test.mjs',
   'tests/agy-native-composer.test.mjs', 'tests/agy-turn-uploads.test.mjs', 'tests/agy-subscription-host.test.mjs',
-  'tests/agy-subscription-rollback.test.mjs', 'tests/agy-local-persona.test.mjs', 'tests/agy-local-chat.test.mjs', 'tests/agy-local-plugin.test.mjs', 'tests/v030-gemini6-installed.test.mjs');
+  'tests/agy-subscription-rollback.test.mjs', 'tests/agy-local-persona.test.mjs', 'tests/agy-local-chat.test.mjs', 'tests/agy-local-subagents.test.mjs', 'tests/agy-local-plugin.test.mjs', 'tests/v030-gemini6-installed.test.mjs');
 else console.log('Running portable checks. Installed Desktop verification requires Electron as Node and DSH installation paths.');
 const stream = run({ files, isolation: 'none' });
 stream.on('test:fail', () => { process.exitCode = 1; });

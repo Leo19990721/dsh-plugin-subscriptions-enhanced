@@ -6,12 +6,11 @@ import {
   createEnhancedLoginState, enhancedProviderGroups, enhancedProviderMoves, hasEnhancedLoginPending,
   mergeEnhancedStatuses, registerEnhancedModelsSettings, startEnhancedStatusPolling,
 } from '../src/models-settings-ui.js';
-import { registerAgyTeamMenu } from '../src/agy-team-menu.js';
 
 const modelSlot = 'settings.models.footer';
 const status = (busy, accounts = []) => ({ busy, accounts });
 
-test('built browser contributes a Models footer and scopes teamwork to its native menu row', async () => {
+test('built browser contributes a Models footer without replacing native chrome', async () => {
   const source = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8');
   // Check the shipped loader and application wiring without rendering React or a browser page.
   let descriptor;
@@ -26,69 +25,11 @@ test('built browser contributes a Models footer and scopes teamwork to its nativ
   const patch = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8');
   assert.doesNotMatch(patch, /id: ui-model-selection|id: ui-agent-preset|id: ui-settings-models/);
   assert.doesNotMatch(source, /settings\.section|settings\.models\.provider-card|@deepseek-ai\/dsh-client-ui-|document\.(?:querySelector|head\.appendChild)|conversation\.hero\.agentPreset/);
-  assert.match(source, /ctx\.inject\(\["modelDirectories"\], \(scope\) => registerAgyTeamMenu\(scope, react\.createElement\)\)/);
-  assert.deepEqual(source.match(/conversation\.input\.model[.\w]*/g), ['conversation.input.model.options']);
+  assert.doesNotMatch(source, /conversation\.input\.model\.options/);
   assert.match(source, /id: "subscription-usage",/);
   assert.match(source, /id: "codex-speed",/);
   assert.match(source, /name: "fast",/);
   assert.match(source, /function enhancedAnchoredPosition\(/);
-});
-
-test('model menu hides only native teamwork for the selected Antigravity route, and restores it on unload', () => {
-  const name = 'conversation.input.model.options';
-  const nativeToggle = () => {};
-  const selectTeamMode = () => {};
-  const original = { options: { id: 'agent-team', order: 7 }, locale: 'agent-team', component: nativeToggle,
-    inject: sessionId => { assert.equal(sessionId, 'session-1'); return { selectTeamMode }; } };
-  const other = { options: { id: 'other', order: 2 } };
-  const rows = [other];
-  const listeners = new Set();
-  let registered = 0;
-  const store = { current: { provider: 'antigravity' }, pending: { provider: 'codex' } };
-  const ctx = {
-    slots: {
-      inject(key, setup) { assert.equal(key, name); return setup(); },
-      entries(key) { assert.equal(key, name); return rows; },
-      subscribe(key, fn) { assert.equal(key, name); listeners.add(fn); return () => listeners.delete(fn); },
-      register(options, component) {
-        registered++;
-        assert.equal(options.name, name);
-        const row = { options, locale: options.locale, inject: options.inject, component };
-        rows.unshift(row); // native list may enumerate the shadow winner first
-        return () => rows.splice(rows.indexOf(row), 1);
-      },
-    },
-    modelDirectories: { directoryFor(id) { assert.equal(id, 'session-1'); return { store }; } },
-  };
-  const off = registerAgyTeamMenu(ctx, (type, props) => ({ type, props }));
-  assert.deepEqual(rows, [other], 'an absent native row stays absent');
-  rows.push(original);
-  const changed = () => { for (const fn of listeners) fn(); };
-  changed(); changed();
-  assert.equal(registered, 1, 'ignore the wrapper on subsequent slot changes');
-  const wrapper = rows[0];
-  assert.equal(wrapper.options.id, original.options.id);
-  assert.ok(wrapper.options.priority < 0);
-  assert.equal(wrapper.options.order, original.options.order);
-  assert.equal(wrapper.options.locale, original.locale);
-  const { hooks, ...injected } = wrapper.inject('session-1');
-  assert.equal(hooks.agyTeamModel, store);
-  const dismiss = () => {};
-  const render = () => wrapper.component({ ...injected, locked: true, dismiss, useAgyTeamModel: select => select(store) });
-  assert.equal(render(), null, 'only committed selection counts, not pending Codex');
-  for (const provider of ['codex', 'deepseek', 'turn:antigravity', undefined]) {
-    store.current = provider ? { provider, model: 'gemini-example' } : null;
-    assert.deepEqual(render(), { type: nativeToggle, props: { selectTeamMode, locked: true, dismiss } });
-  }
-  rows.splice(rows.indexOf(original), 1);
-  changed();
-  assert.deepEqual(rows, [other]);
-  rows.push(original);
-  changed();
-  assert.equal(registered, 2);
-  off();
-  assert.equal(listeners.size, 0);
-  assert.deepEqual(rows, [other, original]);
 });
 
 test('Models footer waits for its native declaration and exposes existing RPC without invoking it', () => {

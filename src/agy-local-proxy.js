@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { createHmac, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -6,6 +7,15 @@ import { dshHomePath } from './agy-local-storage.js';
 
 const exec = promisify(execFile);
 const LOCAL_BYPASS = 'localhost,127.0.0.1,::1';
+const PROXY_KEYS = ['HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY'];
+// Route keys are process-local, never persisted, and cannot be used to test guesses for a proxy password offline.
+const fingerprintKey = randomBytes(32);
+
+/** Copy only the effective child proxy variables and fingerprint that exact launch snapshot. */
+export function agyProxySnapshot(resolved) {
+  const env = Object.fromEntries(PROXY_KEYS.flatMap(key => typeof resolved[key] === 'string' ? [[key, resolved[key]]] : []));
+  return { env, fingerprint: createHmac('sha256', fingerprintKey).update(JSON.stringify(env)).digest('hex') };
+}
 
 function proxyUrl(value) {
   if (!value?.trim()) return;
