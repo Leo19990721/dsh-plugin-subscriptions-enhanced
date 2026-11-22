@@ -10,7 +10,6 @@ export function patchModelsSettings(client, replaceOnce) {
     replace(client.slice(first, last), next(client.slice(first, last)));
   };
 
-  replace('name: "Google Antigravity"', 'name: "Gemini (Google Antigravity)"');
   client = client.replaceAll('Settings → Subscriptions', 'Settings → Models').replaceAll('设置 → 订阅', '设置 → 模型');
   for (const key of ['accountsManage', 'nav', 'intro', 'proxyDialogClose']) {
     const marker = `\t${key}: "`;
@@ -61,7 +60,12 @@ export function patchModelsSettings(client, replaceOnce) {
 	const [proxyAttempt, retryProxy] = react.useReducer(count => count + 1, 0);
 	const [statusError, setStatusError] = react.useState();
 	const attempts = react.useSyncExternalStore(loginState.subscribe, loginState.getSnapshot);
-	const statusGeneration = react.useRef(0);`);
+	const statusGeneration = react.useRef(0);
+	const googleStatus = useEnhancedGoogleStatus(rpc);
+	const agyT = props.agyT ?? ((key, params) => {
+		const text = agyCopy.en[key] ?? key;
+		return Object.entries(params ?? {}).reduce((copy, [k, v]) => copy.replaceAll(\`{\${k}}\`, () => String(v)), text);
+	});`);
   replace('const { rpc } = props;', 'const { rpc, loginState } = props;');
   replace('\tconst [deviceCodes, setDeviceCodes] = (0, react.useState)({});\n', '');
   replace('\tconst pollersRef = (0, react.useRef)(/* @__PURE__ */ new Map());\n', '');
@@ -74,7 +78,7 @@ export function patchModelsSettings(client, replaceOnce) {
 		try {
 			const { providers } = await callSubscriptionsAuth(rpc, "status", {});
 			if (!mountedRef.current || generation !== statusGeneration.current) return;
-			setStatuses(providers);
+			setStatuses(previous => mergeEnhancedStatuses(previous, providers));
 			setStatusError(void 0);
 			loginState.reconcile(providers, observed);
 		} catch (error) {
@@ -193,18 +197,37 @@ ${content.slice(first, last)}
 			statusError && react.createElement("div", { style: styles$5.actions },
 				react.createElement("p", { role: "alert" }, t("enhancedStatusError", { message: statusError })),
 				react.createElement("button", { type: "button", onClick: refresh }, t("modelDefaultsRetry"))),`);
-  replace(providersStart, '\t\t\trenderEnhancedSubscriptionGroups(t, ({ id, name }) => {');
+  replace(providersStart, `			Object.keys(statuses).length === 0 && statusError === void 0 &&
+				react.createElement("p", { role: "status", style: styles$5.statusLine }, t("checking")),
+			react.createElement(EnhancedSubscriptionGroups, {
+				id: sectionId, t, statuses, attempts, errors,
+				extraConnected: googleStatus.connected ? [react.createElement(EnhancedGoogleRow, {
+					key: "google-local", sectionId, state: googleStatus,
+					open: openProvider === "google-local",
+					toggle: () => setOpenProvider(current => current === "google-local" ? void 0 : "google-local"),
+					t, agyT,
+				})] : [],
+				extraAvailable: !googleStatus.connected ? [react.createElement(EnhancedGoogleRow, {
+					key: "google-local", sectionId, state: googleStatus,
+					open: openProvider === "google-local",
+					toggle: () => setOpenProvider(current => current === "google-local" ? void 0 : "google-local"),
+					t, agyT,
+				})] : [],
+				render: ({ id, name }) => {`);
   replace(`				const status = statuses[id];
 				const busy = status?.busy === true;
 				const deviceCode = deviceCodes[id];`, `				const attempt = attempts[id];
 				const starting = attempt?.starting === true;
-				const busy = statuses[id]?.busy === true || (attempt !== void 0 && !starting);
-				const status = busy ? { accounts: [], ...statuses[id], busy: true } : statuses[id];
+				const status = statuses[id];
+				const busy = status?.busy === true || (attempt !== void 0 && !starting);
+				const unavailable = status?.statusUnavailable === true || (status === void 0 && statusError !== void 0);
 				const deviceCode = attempt?.deviceCode;`);
   swapSection('\t\t\t\treturn /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {\n\t\t\t\t\tstyle: styles$5.card,\n\t\t\t\t\tchildren: [', '\t\t\t\t\t\taccounts.map((account) => {', () => `				return react.createElement(EnhancedSubscriptionRow, {
 					key: id, id, name, status, titleId: \`\${sectionId}-\${id}\`,
-					starting, unavailable: statusError !== void 0, error: errors[id] ?? (starting || busy ? void 0 : status?.detail), t,
-					open: openProvider === id || busy || starting,
+					busy, starting, unavailable,
+					error: errors[id] ?? (status?.statusUnavailable || (!starting && !busy) ? status?.detail : void 0), t,
+					retry: status?.statusUnavailable ? refresh : void 0,
+					open: (!unavailable && openProvider === id) || busy || starting,
 					toggle: () => setOpenProvider(current => current === id ? void 0 : id),
 					connect: () => login(id), cancel: () => cancel(id),
 				},
@@ -224,7 +247,7 @@ ${content.slice(first, last)}
 				}, id);
 			}),
 			managedProvider &&`, `				);
-			}),
+			} }),
 			react.createElement("details", { className: "dsh-enhanced-subscription-more", onToggle: event => setOptionsOpen(event.currentTarget.open) },
 				react.createElement("summary", null, t("enhancedOptions")),
 				optionsOpen && react.createElement("div", { className: "dsh-enhanced-subscription-options" },

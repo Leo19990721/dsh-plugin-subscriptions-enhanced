@@ -1,0 +1,53 @@
+import { join } from 'node:path';
+import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
+import { AGY_API, AGY_LOOPBACK, exactKeys, installAgyWitness, readAgyEnvelope } from './agy-ingress.js';
+import { GOOGLE, mountLocalGoogle } from './agy-local-host.js';
+import { createLocalAgy } from './agy-local-runtime.js';
+
+export const name = 'subscriptions-enhanced-google-local';
+export const inject = ['llm', 'agents', 'connection', 'webServer', 'tools'];
+const headers = { 'cache-control': 'no-store' };
+const ownerUser = message => message?.source?.kind === 'user'
+  && (!message.source.principal || message.source.principal.kind === 'owner');
+
+export function apply(ctx, config = {}, makeRuntime = createLocalAgy) {
+  const enabled = AGY_LOOPBACK.test(ctx.webServer.host ?? '');
+  const witness = installAgyWitness(ctx);
+  let google;
+  if (enabled) {
+    const home = resolveDshHome();
+    google = mountLocalGoogle(ctx, config, makeRuntime({ ...config,
+      dataDir: config.dataDir || join(process.env.DSH_PROFILE_DIR || home, 'plugin-data', 'subscriptions-enhanced', 'agy'),
+      agentsFile: config.agentsFile ?? join(home, 'AGENTS.md'),
+    }), (_agent, messages) => messages.length > 0 && messages.every(ownerUser));
+  }
+  ctx.connection.fetch.register({ path: AGY_API, methods: ['POST'], requestBody: 'streaming', async fetch(request) {
+    if (!witness.take('bridge') || request.signal.aborted) return new Response(null, { status: 403, headers });
+    let input;
+    try { input = await readAgyEnvelope(request); }
+    catch { return new Response(null, { status: 400, headers }); }
+    const { rpcId, payload } = input;
+    if (!exactKeys(payload, ['action']) || !['status', 'inspect', 'login', 'logout', 'quota'].includes(payload.action)) return new Response(null, { status: 400, headers });
+    const { action } = payload;
+    if (!google) {
+      if (action !== 'status' && action !== 'inspect') {
+        return Response.json({ type: 'server-response', rpcId, result: { ok: false, error: { code: 'AGY_UNAVAILABLE', message: '本机 Google Antigravity 接入不可用。' } } }, { headers });
+      }
+      return Response.json({ type: 'server-response', rpcId, result: { ok: true, value: { status: 'unavailable', modelCount: 0 } } }, { headers });
+    }
+    try {
+      let value;
+      switch (action) {
+        case 'quota': value = await google.fetchQuota(request.signal); break;
+        case 'login': value = await google.login(request.signal); break;
+        case 'logout': value = await google.logout(request.signal); break;
+        default: value = await google.inspect(action === 'inspect');
+      }
+      return Response.json({ type: 'server-response', rpcId, result: { ok: true, value } }, { headers });
+    } catch (error) {
+      const code = typeof error?.code === 'string' ? error.code : 'AGY_AUTH_FAILED';
+      const message = error instanceof Error && error.message ? error.message : 'Google Antigravity 操作未完成。';
+      return Response.json({ type: 'server-response', rpcId, result: { ok: false, error: { code, message } } }, { headers });
+    }
+  } });
+}

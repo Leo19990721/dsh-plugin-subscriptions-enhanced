@@ -1,14 +1,14 @@
 {
-  "name": "dsh-plugin-subscriptions-enhanced",
-  "version": "0.2.7",
+  "name": "dsh-subscriptions-enhanced",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Manage Codex and Gemini subscriptions in native DSH Model Settings while retaining Gemini writing mode.",
+  "description": "Manage DSH subscriptions and work with Gemini through the local official Antigravity CLI.",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/Leo19990721/dsh-plugin-subscriptions-enhanced.git" },
   "homepage": "https://github.com/Leo19990721/dsh-plugin-subscriptions-enhanced#readme",
   "bugs": { "url": "https://github.com/Leo19990721/dsh-plugin-subscriptions-enhanced/issues" },
-  "engines": { "dsh": ">=0.2.2-rc.3", "node": ">=24.0.0" },
+  "engines": { "node": ">=24.0.0" },
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
@@ -16,7 +16,7 @@
     "./icon": "./icon.svg",
     "./package.json": "./package.json"
   },
-  "files": ["lib/*.js", "lib/upstream.json", "cordis.patch.yml", "locale", "icon.svg", "README.md", "LICENSE", "LICENSE-DSH", "NOTICE"],
+  "files": ["lib/index.js", "lib/client.js", "lib/writing-*.js", "lib/agy-local-*.js", "lib/agy-ingress.js", "lib/agy-identity.js", "lib/agy-launch.js", "lib/agy-acp-client.js", "lib/agy-session.js", "lib/agy-turn-session.js", "lib/agy-turn-options.js", "lib/upstream.json", "cordis.patch.yml", "locale", "icon.svg", "README.md", "LICENSE", "LICENSE-DSH", "NOTICE"],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": {
@@ -29,7 +29,7 @@
     "test": "node scripts/test.mjs",
     "test:portable": "node scripts/test.mjs --portable",
     "release:pack": "pwsh -NoProfile -File scripts/pack.ps1",
-    "check": "node --check src/policy.js && node --check src/gemini-prompt.js && node --check src/badge-compat.js && node --check src/models-settings-ui.js && node --check scripts/models-settings-patch.mjs && node --check src/writing-policy.js && node --check src/writing-host.js && node --check lib/index.js && node --check lib/client.js"
+    "check": "node scripts/check.mjs"
   },
   "dependencies": { "undici": "7.30.2" },
   "devDependencies": { "dsh-plugin-subscriptions": "0.9.13" },

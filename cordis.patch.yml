@@ -1,15 +1,16 @@
-# This bundle remains the only active subscriptions implementation.
+# The optional upstream subscriptions adapter uses the same provider IDs.
 - id: llm-subscriptions
+  name: dsh-plugin-subscriptions
   disabled: true
 - insert:
     - id: llm-subscriptions-enhanced
-      name: dsh-plugin-subscriptions-enhanced
+      name: dsh-subscriptions-enhanced
     - id: preset-writing
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: writing
         name: 写作模式
-        description: 沿用极简模式，自动选择 Gemini，适合对话和写作。
+        description: 沿用极简模式，使用 Gemini 写作。Google 订阅在普通聊天里也可以直接选择。
         order: 2.5
         plugins:
           - id: persona

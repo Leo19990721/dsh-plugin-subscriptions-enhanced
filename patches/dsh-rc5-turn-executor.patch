@@ -1,0 +1,2016 @@
+diff --git a/docs/architecture.i18n.yaml b/docs/architecture.i18n.yaml
+index d897229..0744ae0 100644
+--- a/docs/architecture.i18n.yaml
++++ b/docs/architecture.i18n.yaml
+@@ -24,8 +24,8 @@
+   en: 0d4481070a0ba352
+   zh: 026be77a9f3db68e
+ /deepseek-harness-architecture/turn-flow:
+-  en: 1d496f1893bdbb8d
+-  zh: f16d162a803fc791
++  en: 84f7d2ccfc18615b
++  zh: d9ca9106bab1da99
+ /deepseek-harness-architecture/session-log:
+   en: b3b63d8fe7cab9fe
+   zh: 3703fcf30b1639d0
+@@ -33,5 +33,5 @@
+   en: 1d425c445bfcc931
+   zh: 834d486f88e68edf
+ /deepseek-harness-architecture/where-new-behavior-goes:
+-  en: ee73b1861378b099
+-  zh: 9a182be609485f67
++  en: 79cda7acf41c10f1
++  zh: fb653103c7dbe3bc
+diff --git a/docs/architecture.md b/docs/architecture.md
+index c7c0360..1b62966 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -80,7 +80,7 @@ AgentLoop rolls back failed initialization and awaits serial `agent/created` bef
+ 
+ ## Turn flow
+ 
+-A **step** is one model request plus the tools it calls. A **turn** is zero or more steps: it opens before its first input is claimed and closes once nothing is owed.
++A **turn** spans zero or more steps, from before its first input claim to settlement. External execution keeps the native Session lifecycle. The diagram shows ordinary steps: one model request plus its tool calls.
+ 
+ ```text
+ turn/start
+@@ -148,6 +148,7 @@ New behavior attaches to a documented extension point. Changing the loop itself
+ | Goal | Mechanism |
+ |---|---|
+ | Add a model provider | register its adapter on `ctx.llm` |
++| Delegate a native turn | register an [external turn executor](../packages/core/agent-loop/README.md#turn-executor) |
+ | Add a model-facing capability | register on `ctx.tools`; its schema joins prompt assembly |
+ | Give one session a different capability set | compose an agent preset; a service row there needs an `isolate` realm |
+ | Add shell execution | register a `ctx.shell` backend; the local one spawns through `ctx.subprocess` |
+@@ -157,7 +158,7 @@ New behavior attaches to a documented extension point. Changing the loop itself
+ | Start a Session from an external webhook | register a trusted rule on `ctx.webhookRuntime` and mount a provider adapter |
+ | Add filesystem access or policy | register a `ctx.fs` provider or listen to `fs/*` events |
+ | Confine spawned processes | use a `ctx.sandbox` backend; consumers wrap argv before spawning |
+-| Intercept a request, tool, or turn | use its `agent/*` or `tools/*` event; `agent/turn-stopping` stops a turn |
++| Intercept a request, tool, or turn | use its `agent/*` or `tools/*` event; `agent/turn-stopping` stops ordinary turns |
+ | Add model-facing context | call `agent.inject()`; it lands in the next admitted request |
+ | Add UI or editor integration | drive `ctx.agents` and render from `session/event` |
+ | Add a Web Client Chat node | register a `ConversationNodeDefinition` + keyed renderer |
+diff --git a/docs/architecture.zh.md b/docs/architecture.zh.md
+index 2eae113..9eca758 100644
+--- a/docs/architecture.zh.md
++++ b/docs/architecture.zh.md
+@@ -84,7 +84,7 @@ AgentLoop 回滚失败的初始化，并在启动已排队工作前等待串行
+ 
+ ## 轮次流程
+ 
+-一个**步骤**是一次模型请求加上它调用的工具。一个**轮次**包含零个或多个步骤：它在领取首条输入之前打开，并在不再欠下任何工作时关闭。
++一个**轮次**包含零个或多个步骤，从领取首条输入前开始，到本轮工作结算时结束。外部执行沿用原生会话生命周期。下图展示普通**步骤**：一次模型请求及其工具调用。
+ 
+ ```text
+ turn/start
+@@ -152,6 +152,7 @@ seam 正是替换一个提供方就能改变整个产品的原因。文件系统
+ | 目标 | 机制 |
+ |---|---|
+ | 添加模型提供方 | 在 `ctx.llm` 上注册其适配器 |
++| 委托原生轮次 | 注册[外部轮次执行器](../packages/core/agent-loop/README.zh.md#turn-executor) |
+ | 添加面向模型的能力 | 在 `ctx.tools` 上注册；其 schema 加入提示词组装 |
+ | 让某个会话拥有不同的能力集合 | 组装一个 agent preset；其中的服务行需要 `isolate` realm |
+ | 添加 shell 执行 | 注册 `ctx.shell` 后端；本地后端通过 `ctx.subprocess` spawn 进程 |
+@@ -161,7 +162,7 @@ seam 正是替换一个提供方就能改变整个产品的原因。文件系统
+ | 从外部 webhook 启动 Session | 在 `ctx.webhookRuntime` 上注册可信规则，并挂载提供方适配器 |
+ | 添加文件系统访问或策略 | 注册 `ctx.fs` 提供方，或监听 `fs/*` 事件 |
+ | 限制所启动的进程 | 使用 `ctx.sandbox` 后端；消费方在启动进程前包装 argv |
+-| 拦截请求、工具或轮次 | 使用相应的 `agent/*` 或 `tools/*` 事件；`agent/turn-stopping` 会停止轮次 |
++| 拦截请求、工具或轮次 | 使用相应的 `agent/*` 或 `tools/*` 事件；`agent/turn-stopping` 会停止普通轮次 |
+ | 添加模型可见上下文 | 调用 `agent.inject()`；它会落到下一次获准的请求中 |
+ | 添加 UI 或编辑器集成 | 驱动 `ctx.agents` 并从 `session/event` 渲染 |
+ | 添加 Web Client Chat 节点 | 注册 `ConversationNodeDefinition` + keyed renderer |
+diff --git a/packages/api/session-controller/src/archived-session-gate.ts b/packages/api/session-controller/src/archived-session-gate.ts
+index b1f556b..892cbdb 100644
+--- a/packages/api/session-controller/src/archived-session-gate.ts
++++ b/packages/api/session-controller/src/archived-session-gate.ts
+@@ -10,8 +10,7 @@
+  */
+ 
+ import type { Context, Plugin } from '@deepseek-ai/cordis'
+-import type { Agent } from '@deepseek-ai/dsh-agent'
+-import type { SessionId } from '@deepseek-ai/dsh-session'
++import type {} from '@deepseek-ai/dsh-agent'
+ import type {} from '@deepseek-ai/dsh-workspace'
+ 
+ /**
+@@ -27,33 +26,8 @@ export const ArchivedSessionGate: Plugin.Object<void> = {
+   inject: ['agents', 'sessions', 'workspaceRegistry'],
+   apply(ctx: Context): void {
+     ctx.on('agent/pre-step', (payload, next) =>
+-      underArchivedSession(ctx, payload.agent)
++      ctx.agents.isSessionArchived(payload.agent)
+         ? Promise.resolve({ kind: 'reject' as const })
+         : next())
+   },
+ }
+-
+-/**
+- * Whether the Agent's Session, or a Session above it in its subagent lineage,
+- * is archived. This header-only check follows the durable fields through
+- * subagent-origin Sessions only: a fork of an archived Session is an
+- * independent conversation. The Subagent runtime separately checks managed
+- * ancestry when an intermediate Session is unavailable here.
+- * @param ctx - Host context.
+- * @param agent - the Agent proposing a step.
+- * @returns whether an archived Session owns the step.
+- */
+-export function underArchivedSession(ctx: Context, agent: Agent): boolean {
+-  const archived = ctx.workspaceRegistry.archivedSessionIds
+-  let header = agent.session.header
+-  const visited = new Set<SessionId>()
+-  while (!visited.has(header.id)) {
+-    if (archived.includes(header.id)) return true
+-    visited.add(header.id)
+-    if (header.origin !== 'subagent' || header.parentSession === undefined) return false
+-    const parent = ctx.sessions.get(header.parentSession)
+-    if (parent === undefined) return archived.includes(header.parentSession)
+-    header = parent.header
+-  }
+-  return false
+-}
+diff --git a/packages/api/session-controller/src/commands.ts b/packages/api/session-controller/src/commands.ts
+index 921d71c..6e1742c 100644
+--- a/packages/api/session-controller/src/commands.ts
++++ b/packages/api/session-controller/src/commands.ts
+@@ -508,8 +508,14 @@ export class SessionCommandController {
+         break
+       }
+       case 'steer':
+-        agent.inbox.remove(request.itemId)
+-        agent.steer(message)
++        if (agent.promoteQueued !== undefined) {
++          if (!agent.promoteQueued(request.itemId)) {
++            throw new RemoteError('session/steer-unavailable', 'current turn no longer accepts steering', { itemId: request.itemId })
++          }
++        } else {
++          agent.inbox.remove(request.itemId)
++          agent.steer(message)
++        }
+         break
+       /* v8 ignore next 2 -- closed-union exhaustiveness guard */
+       default:
+diff --git a/packages/api/session-controller/tests/turn-executor-queue.host.spec.ts b/packages/api/session-controller/tests/turn-executor-queue.host.spec.ts
+new file mode 100644
+index 0000000..ea99c6f
+--- /dev/null
++++ b/packages/api/session-controller/tests/turn-executor-queue.host.spec.ts
+@@ -0,0 +1,133 @@
++/** Queue promotion through the stock Session Remote and the native Agent inbox. */
++import { mkdtemp, rm } from 'node:fs/promises'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { Context } from '@deepseek-ai/cordis'
++import AgentLoop from '@deepseek-ai/dsh-agent-loop'
++import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
++import { createUserMessage, type MessageId } from '@deepseek-ai/dsh-llm'
++import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
++import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
++import { expect, it, onTestFinished } from 'vitest'
++import { MockAdapter, textResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
++import { createSessionTestRemote } from './test-remote.ts'
++
++const ORDINARY = { provider: 'mock', model: 'mock' }
++const EXTERNAL = { provider: 'turn:synthetic', model: 'synthetic' } as const
++
++function prompt(text: string) {
++  return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
++}
++
++async function setup(selection: typeof ORDINARY, adapter: MockAdapter) {
++  const ctx = new Context()
++  const root = await mkdtemp(join(tmpdir(), 'dsh-turn-executor-queue-'))
++  const entered = Promise.withResolvers<undefined>()
++  const resume = Promise.withResolvers<undefined>()
++  const release = () => { resume.resolve(undefined) }
++  onTestFinished(async () => {
++    release()
++    try { await ctx.fiber.dispose() } finally {
++      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
++    }
++  })
++  await mountAgentLoopTestDependencies(ctx)
++  await ctx.plugin(JsonlSessionPersistence, { root, compression: 'none' })
++  await ctx.plugin(AgentLoop, { agents: [] })
++  ctx.effect(() => ctx.llm.registerAdapter([ORDINARY.provider], adapter))
++  const remote = await createSessionTestRemote(ctx, { defaultModelSelection: () => ORDINARY, cwd: root })
++  const agent = await ctx.agentLoop.create(SessionId('queue-promotion'), selection)
++  const events: SessionEvent[] = []
++  ctx.on('session/event', (session, event) => { if (session === agent.session) events.push(event) })
++
++  return {
++    ctx, agent, events, release,
++    promote: (itemId: MessageId) => remote.updateQueue({ sessionId: agent.id, itemId, action: { kind: 'steer' } }),
++    async hold() {
++      entered.resolve(undefined)
++      await resume.promise
++    },
++    async waitForHold() {
++      await Promise.race([entered.promise, agent.whenIdle().then(() => {
++        throw new Error('The Agent settled before the first step reached its barrier')
++      })])
++    },
++  }
++}
++
++it('rejects steering a queued occurrence during an external turn without changing the inbox', async () => {
++  const adapter = new MockAdapter([])
++  const { ctx, agent, events, hold, release, waitForHold, promote } = await setup(EXTERNAL, adapter)
++  const active = prompt('hold this external turn')
++  const first = prompt('first followup')
++  const second = prompt('second followup')
++  const seen: { id: MessageId; turn: number }[] = []
++  await ctx.plugin({
++    inject: ['agentLoop'],
++    apply(owner: Context) {
++      owner.agentLoop.registerTurnExecutor(EXTERNAL.provider, {
++        authorize: () => true,
++        async run(input) {
++          input.assertDispatchable()
++          seen.push({ id: input.message.id, turn: input.turn })
++          if (input.message.id === active.id) await hold()
++          input.writeText('external reply')
++          return { kind: 'completed' }
++        },
++      })
++    },
++  })
++
++  agent.followup(active)
++  await waitForHold()
++  agent.followup(first)
++  agent.followup(second)
++  expect(agent.inbox.nextTurn.map(item => item.id)).toEqual([first.id, second.id])
++  const beforeSteer = events.length
++  await expect(promote(second.id)).resolves.toMatchObject({
++    ok: false, error: { code: 'session/steer-unavailable', details: { itemId: second.id } },
++  })
++  expect(agent.inbox.nextTurn.map(item => item.id)).toEqual([first.id, second.id])
++  expect(agent.inbox.nextStep).toEqual([])
++  expect(events.slice(beforeSteer)).toEqual([])
++  release()
++  await agent.whenIdle()
++
++  expect(seen).toEqual([{ id: active.id, turn: 1 }, { id: first.id, turn: 2 }, { id: second.id, turn: 3 }])
++  expect(agent.inbox.nextTurn).toEqual([])
++  expect(adapter.requests).toHaveLength(0)
++  await using reader = await ctx.sessionPersistence.open(agent.id, 'read')
++  const { events: stored } = await reader.read()
++  expect(stored.filter(event => event.type === 'user/message').map(event => event.data.id)).toEqual([active.id, first.id, second.id])
++  expect(stored.filter(event => event.type === 'agent/inbox/spliced' && event.data.outcome === 'canceled')).toEqual([])
++  expect(stored.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind))
++    .toEqual(['completed', 'completed', 'completed'])
++})
++
++it('promotes a queued occurrence into the next step of an ordinary running turn', async () => {
++  const adapter = new MockAdapter([textResponse('ordinary reply'), textResponse('steered reply')])
++  const { ctx, agent, events, hold, release, waitForHold, promote } = await setup(ORDINARY, adapter)
++  const active = prompt('hold the ordinary pre-step')
++  const queued = prompt('steer this occurrence')
++  ctx.on('agent/pre-step', async ({ agent: subject, step }, next) => {
++    if (subject === agent && step === 1) await hold()
++    return next()
++  })
++
++  agent.followup(active)
++  await waitForHold()
++  agent.followup(queued)
++  await expect(promote(queued.id)).resolves.toEqual({ ok: true, value: { accepted: true } })
++  expect(agent.inbox.nextTurn).toEqual([])
++  expect(agent.inbox.nextStep.map(item => item.id)).toEqual([queued.id])
++  release()
++  await agent.whenIdle()
++
++  expect(agent.inbox.nextStep).toEqual([])
++  expect(adapter.requests).toHaveLength(2)
++  expect(adapter.requests[1]?.messages.filter(item => item.role === 'user').map(item => item.content))
++    .toEqual([active.content, queued.content])
++  expect(events.filter(event => event.type === 'user/message').map(event => event.data.id)).toEqual([active.id, queued.id])
++  expect(events.filter(event => event.type === 'step/start').map(event => event.data)).toEqual([{ turn: 1, step: 1 }, { turn: 1, step: 2 }])
++  expect(events.filter(event => event.type === 'turn/end').map(event => event.data)).toEqual([{ turn: 1, reason: { kind: 'completed' } }])
++})
+diff --git a/packages/core/agent-loop/README.i18n.yaml b/packages/core/agent-loop/README.i18n.yaml
+index 253c453..85e0c78 100644
+--- a/packages/core/agent-loop/README.i18n.yaml
++++ b/packages/core/agent-loop/README.i18n.yaml
+@@ -9,8 +9,8 @@
+   en: b711ded29c7b9a17
+   zh: cbccba927743f35f
+ /deepseek-ai-dsh-agent-loop/summary:
+-  en: b2971780b74fd785
+-  zh: 05a3043f49fb646d
++  en: 2aea33b15a9a6e95
++  zh: 30864bc2cb34fce1
+ /deepseek-ai-dsh-agent-loop/table-of-contents:
+   en: d152484eb41ac6b4
+   zh: 09388d293f9be9cb
+@@ -21,11 +21,14 @@
+   en: d5ac4be018308358
+   zh: 4c429a40f666abfb
+ /deepseek-ai-dsh-agent-loop/use-this-package/create-or-resume-agents-programmatically:
+-  en: 82ec792637e8e57f
+-  zh: e32f8ec5ee17afcf
++  en: 43cc356296c80d24
++  zh: 95036aedf33f78cf
+ /deepseek-ai-dsh-agent-loop/use-this-package/what-a-step-does:
+-  en: b789acbbfd6a3094
+-  zh: 85b4d093ae23ce7d
++  en: ab7a6ba71d169056
++  zh: 3ddba8428df9c30a
++/deepseek-ai-dsh-agent-loop/use-this-package/external-turn-executor:
++  en: 64fbe83dba494af3
++  zh: a0b681aa1c24a46d
+ /deepseek-ai-dsh-agent-loop/understand-the-implementation:
+   en: ce7e776e9d516bdb
+   zh: 59d2751743db7795
+@@ -33,8 +36,8 @@
+   en: 030202c112f89366
+   zh: 621d53ed755cafa3
+ /deepseek-ai-dsh-agent-loop/understand-the-implementation/request-headers-and-adapter-defaults:
+-  en: 21547fd3591f1ff7
+-  zh: 80b622e5a0827505
++  en: 5c04f50f333e3a9a
++  zh: 88b3a007259cb989
+ /deepseek-ai-dsh-agent-loop/understand-the-implementation/source-map:
+   en: ec2bf804bd1a5439
+   zh: 316e767507e859ef
+@@ -42,11 +45,11 @@
+   en: 4a10108fb0d37732
+   zh: cc3be0eb8f00901c
+ /deepseek-ai-dsh-agent-loop/understand-the-implementation/persistence-integration:
+-  en: 3b48a480036bd5df
+-  zh: 28cea2036b0dccee
++  en: 1279d2f78b9cb35f
++  zh: b98a62347defd4e2
+ /deepseek-ai-dsh-agent-loop/understand-the-implementation/turn-and-step-flow:
+-  en: 4bd3c8b4a9ee8cf8
+-  zh: 2f4965a3197bed0e
++  en: f9f59dc90c02c386
++  zh: 7b7bcdb3b78ae3b5
+ /deepseek-ai-dsh-agent-loop/understand-the-implementation/failure-and-cancellation:
+   en: eea56903c4ff82f5
+   zh: c0d5abb5767780ed
+@@ -117,8 +120,8 @@
+   en: 83531f2a13cc1f0e
+   zh: 81a780d637dd8c5d
+ /deepseek-ai-dsh-agent-loop/known-limitations-and-deferred-work:
+-  en: a57822fab5e6fdfd
+-  zh: 39f97b0c5040f7c8
++  en: 77cf5133043e17c6
++  zh: 6acb092ba871c29d
+ /deepseek-ai-dsh-agent-loop/known-limitations-and-deferred-work/dev-note:
+   en: e67f633dc6fe7773
+   zh: 3bb0c20c93f16f98
+diff --git a/packages/core/agent-loop/README.md b/packages/core/agent-loop/README.md
+index 30443d6..057ef76 100644
+--- a/packages/core/agent-loop/README.md
++++ b/packages/core/agent-loop/README.md
+@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
+ 
+ ## Summary
+ 
+-`dsh-agent-loop` creates fresh agents or resumes persisted sessions, then drives each turn through model requests, streamed responses, tool execution, and durable session history. Mount it for standard agent compositions; declarative entries start agents at boot, while the public `ctx.agents` API supports programmatic creation and resume. The selected tool executor owns dispatch, concurrency, cancellation, and tool logging. Cancellation preserves streamed text already delivered to the user. Choose a custom `Agent` implementation only when the standard "call model, run tools, repeat" lifecycle is insufficient.
++`dsh-agent-loop` creates fresh agents or resumes persisted sessions, then drives ordinary turns through model requests, streamed responses, tool execution, and durable session history. Mount it for standard agent compositions; declarative entries start agents at boot, while the public `ctx.agents` API supports programmatic creation and resume. The selected tool executor owns dispatch, concurrency, cancellation, and tool logging. Cancellation preserves streamed text already delivered to the user. Choose a custom `Agent` implementation only when the standard "call model, run tools, repeat" lifecycle is insufficient.
+ 
+ ## Table of Contents
+ 
+@@ -68,11 +68,28 @@ const handle = await ctx.agents.create({
+ })
+ ```
+ 
+-Every inbox mutation commits one normalized `agent/inbox/spliced` event. The projection registry folds that event synchronously, so the live projection reflects the splice when `Session.append()` returns. Insertions, edits, removals, claiming, and cancellation replay through the same standard splice coordinates. Ordinary removals carry `outcome: 'canceled'` and emit `agent/inbox/discarded { message }`; claiming uses pure deletions with no outcome and emits `agent/inbox/claimed`. Every insertion emits `agent/inbox/inserted { message }`. `MessageId` stays unique across both pending lists. Consumers that need a removed message use the claimed or discarded notification instead of depending on a pre-splice `session/event` view.
++Each inbox splice commits one normalized `agent/inbox/spliced` event. Promoting queued input to steering commits its removal and insertion together. The projection registry folds these events synchronously, so the live projection reflects the change when `Session.append()` returns. Insertions, edits, removals, claiming, and cancellation replay through the same standard splice coordinates. Ordinary removals carry `outcome: 'canceled'` and emit `agent/inbox/discarded { message }`; claiming uses pure deletions with no outcome and emits `agent/inbox/claimed`. Every insertion emits `agent/inbox/inserted { message }`. `MessageId` stays unique across both pending lists. Consumers that need a removed message use the claimed or discarded notification instead of depending on a pre-splice `session/event` view.
+ 
+ ### What a step does
+ 
+-Each step sends the session's derived history — with the latest non-empty `system/message` node as the effective prompt, or no system messages when the rendered prompt is empty — and its visible tool schemas; the model's tool calls run through the guarded tool pipeline and every accepted fact is appended to the session log before the next step derives from it. The loop passes the complete raw call batch to `ctx.tools.execute()`; built-in executors preserve model-order results and exclusive barriers. Cancellation is cooperative: `agent.cancel()` aborts the current activity and, unless `keepInbox` is set, clears pending work; a cancelled stream finalizes the text already delivered to the user.
++Each ordinary step sends the session's derived history — with the latest non-empty `system/message` node as the effective prompt, or no system messages when the rendered prompt is empty — and its visible tool schemas; the model's tool calls run through the guarded tool pipeline and every accepted fact is appended to the session log before the next step derives from it. The loop passes the complete raw call batch to `ctx.tools.execute()`; built-in executors preserve model-order results and exclusive barriers. Cancellation is cooperative: `agent.cancel()` aborts the current activity and, unless `keepInbox` is set, clears pending work; a cancelled stream finalizes the text already delivered to the user.
++
++<a id="turn-executor"></a>
++### External turn executor
++
++To delegate execution within the [native turn lifecycle](../../../docs/architecture.md#turn-flow), call `ctx.agentLoop.registerTurnExecutor('turn:' + stableName, { authorize, run, afterCommit, release })` from the owning Cordis fiber. `afterCommit` and `release` are optional. Each provider permits one live registration. The disposer revokes the registration, then cancels and awaits its admitted work. The callbacks are trusted Host code; the loop does not grant them the submitting client's identity or request authority.
++
++The loop fixes the execution branch and any executor route at native turn entry. `agent.model.current()` and the `modelSelection.next` projection still describe the next selection. When the current selection points to an executor during an ordinary turn, a continuation uses the last ordinary step's selection.
++
++An executor turn accepts only a `next-turn` message approved by `authorize` with a live ticket from the current registration for that exact queue occurrence. Steering is refused without removing the queued prompt. Changing mode or the turn model cannot reroute pending work. The loop never falls back to a model adapter or automatically replays executor work, including when dispatch is uncertain.
++
++The loop starts the leased job only after it atomically appends `step/start` and `user/message` and dequeues the message in memory. It calls `run` only after flushing that admission through the exact durable write handle it owns for the Session.
++
++The plugin must register its actual execution authority, filter the data it sends to the provider, and bring its processes to quiescence. It must revalidate authorization and call `assertDispatchable` immediately before each possible dispatch, with no intervening `await`. Registration does not bypass permission checks.
++
++The executor supplies text through `writeText`. The loop streams it through native `agent/assistant-stream` frames and records it in the same Session. A local Stop after dispatch leaves the external outcome unknown unless the executor returns a known terminal result. The loop calls `afterCommit` only for such a result and after the matching `turn/end` is durable. It awaits `release` during cleanup.
++
++The executor path skips ordinary tool execution, system prompt preparation, `agent/pre-step`, `agent/turn-stopping`, and the LLM adapter. Product code must explicitly connect the catalog, remote role checks, and writing policy. Registration supplies no renderer or ACP login.
+ 
+ -----
+ 
+@@ -90,7 +107,7 @@ The package is the one concrete implementation of the public `Agent` contract. I
+ 
+ ### Request headers and adapter defaults
+ 
+-Before prompt assembly, the loop calls `agent.model.current()` and captures provider, model, and optional explicit reasoning effort for the step and its retries. `AssembleContext.modelSelection` and `agent/pre-step.modelSelection` carry that selection; prompt variables use its route, and omitted effort uses adapter defaults. The deprecated `agent/request` hook remains available to existing listeners and may replace other controls such as sampling. Changing provider or model, or adding, changing, or clearing reasoning effort rejects the step before input is committed. A later recorded choice applies to the next step, including a tool continuation in the same turn.
++Before prompt assembly, the loop calls `agent.model.current()` and captures provider, model, and optional explicit reasoning effort for the step and its retries. `AssembleContext.modelSelection` and `agent/pre-step.modelSelection` carry that selection; prompt variables use its route, and omitted effort uses adapter defaults. The deprecated `agent/request` hook remains available to existing listeners and may replace other controls such as sampling. Changing provider or model, or adding, changing, or clearing reasoning effort rejects the step before input is committed. A later ordinary model choice applies to the next ordinary step, including a tool continuation in the same turn.
+ 
+ After `agent/request`, `ctx.llm.prepareCall()` validates adapter-owned fields and resolves reasoning-effort and output-token defaults under the active turn signal. The loop retains that exact adapter through resolution, `request/header` logging, and dispatch. It writes a full header for the first request, a changed envelope (config or tools — the prompt is not part of the header), an explicit message-series start, a request after a surface replacement or image-offload decision, and resume; unchanged steps, retries, and ordinary later turns in the same series inherit the latest header, and an in-history prompt append is not a replacement, so the request that follows it inherits the header too. Beside the header, the loop logs `request/context` — provider, model, `contextWindow`, and the route's `systemPromptUpdate` mode from `prepareCall()` — only when one of those differs from the latest snapshot. Before the next waterfall, the loop removes adapter-default fields so the current route resolves them again, while explicit settings persist. An unhandled route still fails with `NO_ADAPTER`.
+ 
+@@ -113,11 +130,11 @@ The loop awaits its required registrations before publishing its factory. It cal
+ 
+ ### Persistence integration
+ 
+-The loop is the production acquisition point for session write handles. When `ctx.sessionPersistence` is mounted, `create`/`createAgent` call `persistence.create(header)` — storing the durable identity and taking write ownership before publication — and append the constructor seed through the handle; `resume` calls `persistence.open(id, 'write')` first (excluding a concurrent resume of the same id), reads the physically valid log through the handle, and appends `interruptedTurnClosers` for a log crashed mid-turn as an ordinary batch — semantic crash repair is the agent layer's job, not a storage entry point. Before store entry, `appendUnstoredSuffix` stores constructor history, including seed markers. Setup then appends through the live event feed. From store entry onward, the mounted backend routes the session's `session/event` batches, `session/flush` barriers, and `session/disposed` retirement into the active write handle by session id; the loop touches storage only through the handle it owns. With the backend still mounted, teardown closes the handle after the driver commits its closing events; close drains the routed buffer and releases write ownership. Without a backend, sessions are memory-only and nothing else changes.
++The loop is the production acquisition point for session write handles. When `ctx.sessionPersistence` is mounted, `create`/`createAgent` call `persistence.create(header)` — storing the durable identity and taking write ownership before publication — and append the constructor seed through the handle; `resume` calls `persistence.open(id, 'write')` first (excluding a concurrent resume of the same id), reads the physically valid log through the handle, and appends `interruptedTurnClosers` for a log crashed mid-turn as an ordinary batch — semantic crash repair is the agent layer's job, not a storage entry point. Before store entry, `appendUnstoredSuffix` stores constructor history, including seed markers. Setup then appends through the live event feed. From store entry onward, the mounted backend routes the session's `session/event` batches, `session/flush` barriers, and `session/disposed` retirement into the active write handle by session id; the loop touches storage only through the handle it owns. With the backend still mounted, teardown closes the handle after the driver commits its closing events; close drains the routed buffer and releases write ownership. Without a backend, sessions are memory-only and support only ordinary turns.
+ 
+ ### Turn and step flow
+ 
+-The driver owns one agent for its lifetime and runs inside `ctx.agents.withInitiator(agent, ...)`. `AgentLoop` registers the standard `inbox` projection for its service lifetime, so cold reads work before any Agent exists and after all Agents unload. It also owns `modelSelection` and constructs an `AgentModel` for each Agent, with the public [Model API](../agent/README.md#model-selection). Its package-internal `ReactLoopInbox` uses that shared projection for structural commands and loop-only claims. At a turn boundary it opens the durable turn, then atomically claims pending next-step input plus one queued prompt; between steps it claims only next-step input. The driver assembles the prompt and tools and runs `agent/pre-step`; the fallback projects runtime context after listeners run. A rejected decision or empty first batch opens no step. On the first attempt after acceptance, `step/start` precedes the `agent/request` waterfall and `prepareCall()`; neither async phase sees the pending system prompt or accepted users committed to history, and cancellation during either commits neither. For every attempt, the loop then synchronously reconciles the rendered prompt against the surviving `system/message` nodes using the prepared call capability, refreshes registered runtime facts without reassembling the bound prompt or tools, appends the accepted `user/message` batch only on the first attempt with its owned context candidate replaced in place, and restores removed runtime context, logs the header and context as needed, and derives and freezes the request before streaming through that bound prepared call. Retries reuse the same rendered assembly without repeating assembly, `agent/pre-step`, or user admission. Reconciliation sees pre-step and retry compaction; a broken series consolidates the prompt at the head rather than appending an update after already-committed users. The request is `header.config`, `deriveMessages()`, and `header.tools`; it carries no `system` field. Each model attempt emits one process-local `start`, emits every `chunk` only after the matching durable assistant-frame settlement, and emits exactly one terminal `end`; final assembly or message-append failure settles it as `aborted`, while `committed` follows the durable `assistant/message`. Each successful model call appends one message anchor, and a cancelled stream appends an `interrupted: true` anchor with the delivered prefix so the next request contains what the user saw. Within a step, exclusive calls form barriers and parallel-safe calls use the bounded rolling pool; policy, durable results... (line truncated to 2000 chars)
++The driver owns one agent for its lifetime and runs inside `ctx.agents.withInitiator(agent, ...)`. `AgentLoop` registers the standard `inbox` projection for its service lifetime, so cold reads work before any Agent exists and after all Agents unload. It also owns `modelSelection` and constructs an `AgentModel` for each Agent, with the public [Model API](../agent/README.md#model-selection). Its package-internal `ReactLoopInbox` uses that shared projection for structural commands and loop-only claims. For an ordinary turn it opens the durable turn, then atomically claims pending next-step input plus one queued prompt; between steps it claims only next-step input. The driver assembles the prompt and tools and runs `agent/pre-step`; the fallback projects runtime context after listeners run. A rejected decision or empty first batch opens no step. On the first attempt after acceptance, `step/start` precedes the `agent/request` waterfall and `prepareCall()`; neither async phase sees the pending system prompt or accepted users committed to history, and cancellation during either commits neither. For every attempt, the loop then synchronously reconciles the rendered prompt against the surviving `system/message` nodes using the prepared call capability, refreshes registered runtime facts without reassembling the bound prompt or tools, appends the accepted `user/message` batch only on the first attempt with its owned context candidate replaced in place, and restores removed runtime context, logs the header and context as needed, and derives and freezes the request before streaming through that bound prepared call. Retries reuse the same rendered assembly without repeating assembly, `agent/pre-step`, or user admission. Reconciliation sees pre-step and retry compaction; a broken series consolidates the prompt at the head rather than appending an update after already-committed users. The request is `header.config`, `deriveMessages()`, and `header.tools`; it carries no `system` field. Each model attempt emits one process-local `start`, emits every `chunk` only after the matching durable assistant-frame settlement, and emits exactly one terminal `end`; final assembly or message-append failure settles it as `aborted`, while `committed` follows the durable `assistant/message`. Each successful model call appends one message anchor, and a cancelled stream appends an `interrupted: true` anchor with the delivered prefix so the next request contains what the user saw. Within a step, exclusive calls form barriers and parallel-safe calls use the bounded rolling pool; policy, durable results... (line truncated to 2000 chars)
+ 
+ Prompt admission uses the actual `prepareCall()` result, not the preceding `request/context`. With no system node, even an empty prompt is appended (reserving node 0 without a wire message). On an incapable route, or at a new request series whose effective text differs, a non-empty rendering is consolidated at the first system node: each non-empty later system node receives a logged per-node empty replacement, then the head is rewritten if needed. Dormant empty tails need no replacement and do not determine the effective text. A series start whose latest surviving node already holds the rendering produces no system event, so the request keeps the prefix it had. On a continuing `in-history` series, an unchanged effective prompt produces no event and a non-empty change appends. An empty rendering clears every non-empty later system node through a logged per-node empty replacement, then empties the head if needed, regardless of route or series state. No older instructions remain model-visible. An empty head with no active later system node means no prompt; repeated clears and resume leave it empty. A restored non-empty prompt follows the same route/series rule: a continuing capable route may append it, while an incapable route or a new series whose effective text differs refills the head. A step starts a series when the pre-step decision declares `startsRequestSeries` or `session.surface.contentGeneration` changed since attachment or the last request (a replacement or image-offload decision). Visible tool-schema changes force prompt consolidation only when the prepared route lacks `toolUpdate`. Routes supporting both tool and system-prompt updates can append a changed prompt and activate added tools without rewriting earlier messages. If another admission condition replaces a system node, the request starts a new series with current tool declarations. Resume and a provider or model swap alone continue the series; the prepared route still governs admission. Per-node empty replacements preserve intervening history without a surface delete operation.
+ 
+@@ -231,6 +248,7 @@ These limits define when the loop needs special care. They are current package c
+ - **Classification is unary** — calls whose safety depends on comparing siblings or resources must remain exclusive ([rationale](../../../.agents/notes/implemented/feature/2026-07-10-parallel-tool-call-execution.md)).
+ - **Root shutdown persistence** — shutting down the root context with an active Agent can leave its final `turn/end` in memory but absent from the persisted log. Agent teardown completing does not guarantee that this event was saved.
+ - **Previously closed inconsistent history** — failed-step recovery does not rewrite unanswered calls in already-closed historical turns.
++- **External turn logs require this loop** — cold resume preserves pending external prompts without authorizing a replay. Keep these Sessions in an isolated profile: an older loop cannot enforce the queue's routing restriction after a model change. The JSONL writer currently reads the log to confirm each external checkpoint.
+ - **Config labels are fresh by default** — omitting `sessionId` creates a fresh `${id}-session-<uuid>` on every startup; exact resume-or-create behavior requires an explicit stable `sessionId`, while `resumeSessionId` requires existing persisted history.
+ - **Config agents have no per-agent persona field or setup hook** — they use the deployment persona; scoped persona and tool composition are available only through the programmatic `ctx.agents.create()` / `resume()` factory options.
+ - **No built-in turn budget** — tool calls or steering continue the current turn; a policy that bounds runaway turns must cancel from an existing lifecycle extension point such as `agent/turn-stopping`.
+diff --git a/packages/core/agent-loop/README.zh.md b/packages/core/agent-loop/README.zh.md
+index e20aa96..a99ba9e 100644
+--- a/packages/core/agent-loop/README.zh.md
++++ b/packages/core/agent-loop/README.zh.md
+@@ -9,7 +9,7 @@ kind: "package-reference"
+ 
+ ## 概述
+ 
+-`dsh-agent-loop` 创建全新 agent 或恢复持久化会话，随后通过模型请求、流式响应、工具执行和持久会话历史驱动每个轮次。标准 agent 组合应挂载本包；声明式条目会在启动时启动 agent，公开的 `ctx.agents` API 则支持以编程方式创建和恢复 agent。所选工具执行器负责分发、并发、取消和工具日志。取消会保留已经流式交付给用户的文本。只有标准的「调用模型、运行工具、重复」生命周期无法满足需求时，才应选择自定义 `Agent` 实现。
++`dsh-agent-loop` 创建全新 agent 或恢复持久化会话，随后通过模型请求、流式响应、工具执行和持久会话历史驱动普通轮次。标准 agent 组合应挂载本包；声明式条目会在启动时启动 agent，公开的 `ctx.agents` API 则支持以编程方式创建和恢复 agent。所选工具执行器负责分发、并发、取消和工具日志。取消会保留已经流式交付给用户的文本。只有标准的「调用模型、运行工具、重复」生命周期无法满足需求时，才应选择自定义 `Agent` 实现。
+ 
+ ## 目录
+ 
+@@ -68,11 +68,28 @@ const handle = await ctx.agents.create({
+ })
+ ```
+ 
+-每次 inbox 变更都会提交一条规范化的 `agent/inbox/spliced` 事件。投影注册表会同步折叠该事件，因此 `Session.append()` 返回时，实时投影已经反映该 splice。插入、编辑、移除、领取与取消都通过同一组标准 splice 坐标回放。普通删除携带 `outcome: 'canceled'` 并发出 `agent/inbox/discarded { message }`；领取使用不带 outcome 的纯删除，并发出 `agent/inbox/claimed`。每次插入都会发出 `agent/inbox/inserted { message }`。`MessageId` 在两个待处理列表之间保持唯一。需要被移除消息的消费方应使用 claimed 或 discarded 通知，而不依赖 splice 前的 `session/event` 投影视图。
++每次 inbox splice 都会提交一条规范化的 `agent/inbox/spliced` 事件。将排队输入改为中途引导时，移除和插入一起提交。投影注册表会同步折叠这些事件，`Session.append()` 返回时实时投影已反映变更。插入、编辑、移除、领取与取消都通过同一组标准 splice 坐标回放。普通删除携带 `outcome: 'canceled'` 并发出 `agent/inbox/discarded { message }`；领取使用不带 outcome 的纯删除，并发出 `agent/inbox/claimed`。每次插入都会发出 `agent/inbox/inserted { message }`。`MessageId` 在两个待处理列表之间保持唯一。需要被移除消息的消费方应使用 claimed 或 discarded 通知，而不依赖 splice 前的 `session/event` 投影视图。
+ 
+ ### 一个步骤做什么
+ 
+-每个步骤都会发送会话的派生历史——最新的非空 `system/message` 节点是有效提示词，渲染提示词为空时则没有系统消息——及其可见工具 schema；模型的工具调用经过受守卫的工具流水线，每个被接纳的事实都会在下一步据此派生之前追加到会话日志。循环把完整的原始调用批次传给 `ctx.tools.execute()`；内置执行器保留模型顺序的结果和独占屏障。取消是协作式的：`agent.cancel()` 中止当前活动，并在未设置 `keepInbox` 时清除待处理工作；被取消的流会终结已送达用户的文本。
++每个普通步骤都会发送会话的派生历史——最新的非空 `system/message` 节点是有效提示词，渲染提示词为空时则没有系统消息——及其可见工具 schema；模型的工具调用经过受守卫的工具流水线，每个被接纳的事实都会在下一步据此派生之前追加到会话日志。循环把完整的原始调用批次传给 `ctx.tools.execute()`；内置执行器保留模型顺序的结果和独占屏障。取消是协作式的：`agent.cancel()` 中止当前活动，并在未设置 `keepInbox` 时清除待处理工作；被取消的流会终结已送达用户的文本。
++
++<a id="turn-executor"></a>
++### 外部轮次执行器
++
++要把执行交给外部提供方，同时保留[原生轮次生命周期](../../../docs/architecture.zh.md#turn-flow)，请从负责注册的 Cordis fiber 调用 `ctx.agentLoop.registerTurnExecutor('turn:' + stableName, { authorize, run, afterCommit, release })`。`afterCommit` 和 `release` 可省略。每个提供方只允许一个有效注册。调用释放函数时，先撤销注册，再取消并等待已接纳的任务。这些回调是受信任的 Host 代码；循环不授予它们提交方的客户端身份或请求权限。
++
++循环在原生轮次开始时确定执行分支和执行器路由，本轮内保持不变。`agent.model.current()` 和 `modelSelection.next` 投影仍反映下一次选择。普通轮次继续执行时，如果当前选择指向外部执行器，下一步沿用上一个普通步骤的选择。
++
++执行器轮次只接纳经 `authorize` 授权的 `next-turn` 消息，且该次入队须有来自当前注册的有效票据。循环拒绝 steering（中途引导），并将排队消息留在原位。切换模式或轮次模型不能改变待处理任务的路由。即使分派结果不明，循环也不会回退到模型适配器或自动回放执行器任务。
++
++循环先在内存中以原子操作追加 `step/start`、追加 `user/message` 并将消息出队，然后才启动租约内的任务。只有通过循环自己持有的该会话持久化写句柄刷写这批记录后，才调用 `run`。
++
++插件须注册实际执行权限、筛选发给提供方的数据，并让自身进程完全停稳。每次可能分派前，插件须重新验证授权，在紧接着分派的位置调用 `assertDispatchable`，两者之间不得插入 `await`。注册不会绕过权限检查。
++
++执行器通过 `writeText` 提供文本。循环经原生 `agent/assistant-stream` 帧流式交付文本，并记录在同一会话中。分派后在本机按下停止，只有执行器返回了已知终态，才能确认外端结果。循环只在拿到该结果且对应的 `turn/end` 持久化后调用 `afterCommit`。清理时，循环等待 `release` 完成。
++
++执行器分支跳过普通工具执行、系统提示词准备、`agent/pre-step`、`agent/turn-stopping` 和 LLM（大语言模型）适配器。产品代码须显式接入目录、远程角色检查和写作策略。注册不提供渲染器或 ACP（Agent Client Protocol）登录。
+ 
+ -----
+ 
+@@ -90,7 +107,7 @@ const handle = await ctx.agents.create({
+ 
+ ### 请求 header 与适配器默认值
+ 
+-循环在提示词组装前调用 `agent.model.current()`，并为该步骤及其重试捕获提供方、模型及可选的显式推理强度。`AssembleContext.modelSelection` 与 `agent/pre-step.modelSelection` 携带该选择；提示词变量使用其中的路由，省略强度时使用适配器默认值。已弃用的 `agent/request` hook 仍可供现有监听器使用，可以替换采样等其他控制参数。改变提供方或模型，或添加、修改、清除推理强度，都会在提交输入前拒绝该步骤。之后记录的选择从下一个步骤开始生效，包括同一轮次中的工具后续步骤。
++循环在提示词组装前调用 `agent.model.current()`，并为该步骤及其重试捕获提供方、模型及可选的显式推理强度。`AssembleContext.modelSelection` 与 `agent/pre-step.modelSelection` 携带该选择；提示词变量使用其中的路由，省略强度时使用适配器默认值。已弃用的 `agent/request` hook 仍可供现有监听器使用，可以替换采样等其他控制参数。改变提供方或模型，或添加、修改、清除推理强度，都会在提交输入前拒绝该步骤。之后记录的普通模型选择从下一个普通步骤开始生效，包括同一轮次中的工具后续步骤。
+ 
+ `agent/request` 返回后，`ctx.llm.prepareCall()` 会在活跃轮次信号下校验适配器持有的字段，并解析推理强度和输出 token 默认值。循环会在解析、`request/header` 记录与分派期间保留同一个适配器。循环会为首次请求、变化的 envelope（配置或工具——提示词不属于 header）、显式消息序列起点、surface 替换或图片省略决定后的请求及恢复写入完整 header；同一序列内内容未变的步骤、重试与普通后续轮次继承最新 header，历史内追加提示词不是替换，因此紧随其后的请求同样继承 header。在 header 之外，循环还会记录 `request/context`——提供方、模型、`contextWindow` 以及来自 `prepareCall()` 的路由 `systemPromptUpdate` 模式——且仅在其中任何一项与最新快照不同时记录。下一次 waterfall 分发前，循环移除适配器默认字段，使当前路由重新解析它们；显式设置则保留。未处理的路由仍以 `NO_ADAPTER` 失败。
+ 
+@@ -113,11 +130,11 @@ loop 在发布工厂前等待必需的注册完成。它对模型选择和 inbox
+ 
+ ### 持久化集成
+ 
+-循环是会话写句柄在生产环境中的获取点。挂载 `ctx.sessionPersistence` 后，`create`/`createAgent` 调用 `persistence.create(header)`——在发布之前存储持久身份并取得写所有权——并通过句柄追加构造 seed；`resume` 先调用 `persistence.open(id, 'write')`（排除同 id 的并发恢复），通过句柄读取物理上有效的日志，并为在轮次中途崩溃的日志把 `interruptedTurnClosers` 作为普通批次追加——语义崩溃修复是 agent 层的职责，而非存储入口。入库前，`appendUnstoredSuffix` 存储包含 seed 标记的构造历史。随后 setup 通过实时事件流追加。从入库起，挂载的后端按会话 id 把该会话的 `session/event` 批次、`session/flush` 屏障与 `session/disposed` 退役路由进活跃写句柄；循环只通过它拥有的句柄触碰存储。在后端仍保持挂载时，teardown 会在驱动器提交收尾事件后关闭句柄；close 排空已路由的缓冲并释放写所有权。没有后端时，会话只存在于内存中，其余一切不变。
++循环是会话写句柄在生产环境中的获取点。挂载 `ctx.sessionPersistence` 后，`create`/`createAgent` 调用 `persistence.create(header)`——在发布之前存储持久身份并取得写所有权——并通过句柄追加构造 seed；`resume` 先调用 `persistence.open(id, 'write')`（排除同 id 的并发恢复），通过句柄读取物理上有效的日志，并为在轮次中途崩溃的日志把 `interruptedTurnClosers` 作为普通批次追加——语义崩溃修复是 agent 层的职责，而非存储入口。入库前，`appendUnstoredSuffix` 存储包含 seed 标记的构造历史。随后 setup 通过实时事件流追加。从入库起，挂载的后端按会话 id 把该会话的 `session/event` 批次、`session/flush` 屏障与 `session/disposed` 退役路由进活跃写句柄；循环只通过它拥有的句柄触碰存储。在后端仍保持挂载时，teardown 会在驱动器提交收尾事件后关闭句柄；close 排空已路由的缓冲并释放写所有权。没有后端时，会话只存在于内存中，只支持普通轮次。
+ 
+ ### 轮次与步骤流程
+ 
+-驱动器在其整个生命周期内拥有一个 agent，并在 `ctx.agents.withInitiator(agent, ...)` 内运行。`AgentLoop` 在服务生命周期内注册标准 `inbox` 投影，因此冷读取在没有 Agent 和所有 Agent 卸载后都可用。它还拥有 `modelSelection`，并为每个 Agent 构建 `AgentModel`，实现公开的 [Model API](../agent/README.zh.md#model-selection)。其包内部 `ReactLoopInbox` 使用该共享投影执行结构化命令与仅供 loop 使用的领取操作。在轮次边界，它先打开持久轮次，再原子领取待处理的 next-step 输入与一条排队提示词；在步骤之间则只领取 next-step 输入。驱动器组装提示词与工具，并运行 `agent/pre-step`；fallback 在监听器执行后投影运行时上下文。被拒绝的决定或空的首批输入不打开步骤。接纳后的首次尝试先记录 `step/start`，再运行 `agent/request` waterfall 与 `prepareCall()`；这两个异步阶段都看不到待提交的系统提示词与已接纳用户消息进入历史，在任一阶段取消都不会提交这两者。每次尝试时，循环随后依据已准备调用的能力，同步将渲染后的提示词与存活的 `system/message` 节点协调一致、刷新已注册运行时事实而不重新组装绑定的提示词或工具、仅在首次尝试追加已接纳的 `user/message` 批次并原位替换循环自有上下文候选、恢复被移除的运行时上下文、按需记录 header 与 context，再派生并冻结请求，通过该绑定的已准备调用发起流式请求。重试复用同一份已渲染组装结果，不重复组装、`agent/pre-step` 或用户消息准入。协调过程可见 pre-step 与重试中的压缩；序列中断时将提示词归并到头部，而非在已提交用户消息之后追加更新。请求由 `header.config`、`deriveMessages()` 与 `header.tools` 构成，不携带 `system` 字段。每次模型尝试会发出一个进程本地 `start`，仅在匹配的持久 assistant-frame 结算之后发出各个 `chunk`，并恰好发出一个终态 `end`；最终组装或消息追加失败时以 `aborted` 结算，`committed` 则出现在持久 `assistant/message` 之后。每次成功的模型调用都恰好追加一个 message 锚点，被取消的流则追加带 `interrupted: true` 的锚点并携带已交付前缀，使下一次请求包含用户看到的内容。在步骤内，独占调用形成屏障，并行安全调用使用有界滚动池；策略、持久结果与结果上下文保持模型顺序。
++驱动器在其整个生命周期内拥有一个 agent，并在 `ctx.agents.withInitiator(agent, ...)` 内运行。`AgentLoop` 在服务生命周期内注册标准 `inbox` 投影，因此冷读取在没有 Agent 和所有 Agent 卸载后都可用。它还拥有 `modelSelection`，并为每个 Agent 构建 `AgentModel`，实现公开的 [Model API](../agent/README.zh.md#model-selection)。其包内部 `ReactLoopInbox` 使用该共享投影执行结构化命令与仅供 loop 使用的领取操作。对于普通轮次，它先打开持久轮次，再原子领取待处理的 next-step 输入与一条排队提示词；在步骤之间则只领取 next-step 输入。驱动器组装提示词与工具，并运行 `agent/pre-step`；fallback 在监听器执行后投影运行时上下文。被拒绝的决定或空的首批输入不打开步骤。接纳后的首次尝试先记录 `step/start`，再运行 `agent/request` waterfall 与 `prepareCall()`；这两个异步阶段都看不到待提交的系统提示词与已接纳用户消息进入历史，在任一阶段取消都不会提交这两者。每次尝试时，循环随后依据已准备调用的能力，同步将渲染后的提示词与存活的 `system/message` 节点协调一致、刷新已注册运行时事实而不重新组装绑定的提示词或工具、仅在首次尝试追加已接纳的 `user/message` 批次并原位替换循环自有上下文候选、恢复被移除的运行时上下文、按需记录 header 与 context，再派生并冻结请求，通过该绑定的已准备调用发起流式请求。重试复用同一份已渲染组装结果，不重复组装、`agent/pre-step` 或用户消息准入。协调过程可见 pre-step 与重试中的压缩；序列中断时将提示词归并到头部，而非在已提交用户消息之后追加更新。请求由 `header.config`、`deriveMessages()` 与 `header.tools` 构成，不携带 `system` 字段。每次模型尝试会发出一个进程本地 `start`，仅在匹配的持久 assistant-frame 结算之后发出各个 `chunk`，并恰好发出一个终态 `end`；最终组装或消息追加失败时以 `aborted` 结算，`committed` 则出现在持久 `assistant/message` 之后。每次成功的模型调用都恰好追加一个 message 锚点，被取消的流则追加带 `interrupted: true` 的锚点并携带已交付前缀，使下一次请求包含用户看到的内容。在步骤内，独占调用形成屏障，并行安全调用使用有界滚动池；策略、持久结果与结果上下文保持模型顺序。
+ 
+ 提示词准入依据实际的 `prepareCall()` 结果，而非先前的 `request/context`。没有系统节点时，即使提示词为空也追加（预留第 0 号节点，但不产生协议消息）。在不具备能力的路由上，或有效文本不同的新请求序列开始时，非空渲染文本归并到首个系统节点：每个非空的后续系统节点分别收到有日志记录的空内容替换，随后按需重写头节点。未生效的空尾节点无需替换，也不决定有效文本。新序列开始时若最新存活节点已经持有该渲染文本，则不产生系统事件，请求保留原有前缀。延续中的 `in-history` 序列在有效提示词不变时不产生事件，非空变更则追加。无论路由或序列状态如何，空渲染文本都会通过有日志记录的逐节点空内容替换清除每个非空的后续系统节点，再按需清空头节点。模型不会继续看到旧指令。空头节点且没有生效的后续系统节点表示没有提示词；重复清除与恢复会话都保持为空。重新提供的非空提示词遵循同一路由／序列规则：延续中的具备能力路由可以追加它，不具备能力的路由或有效文本不同的新序列则重新填充头节点。以下情况开启序列：pre-step 决定声明 `startsRequestSeries`，或 `session.surface.contentGeneration` 自附接或上次请求以来发生变化（替换或图片省略决定）。仅当已准备路由未声明 `toolUpdate` 时，可见工具 schema 变化才强制归并提示词。同时支持工具和系统提示词更新的路由可以追加变更后的提示词并激活新增工具，无需改写此前消息。如果其他准入条件替换系统节点，请求会以当前工具声明开启新序列。恢复与单纯的提供方或模型切换都延续序列；准入仍由已准备的路由决定。逐节点的空内容替换保留其间历史，无需 surface 删除操作。
+ 
+@@ -231,6 +248,7 @@ loop 在发布工厂前等待必需的注册完成。它对模型选择和 inbox
+ - **分类是一元的**：安全性取决于比较同级调用或资源的调用必须保持独占（[原理](../../../.agents/notes/implemented/feature/2026-07-10-parallel-tool-call-execution.zh.md)）。
+ - **根上下文关停的持久化**：存在活跃 Agent 时，关停根上下文可能使最终的 `turn/end` 仅留在内存中，未写入持久化日志。Agent teardown 完成不保证该事件已保存。
+ - **此前已关闭的不一致历史**：失败步骤恢复不会改写已关闭历史轮次中尚无结果的调用。
++- **外部轮次日志需要对应的循环**：冷恢复会保留待处理的外部提示词，但不授权重放。请在隔离配置中使用这些会话；旧循环无法在切换模型后维持待处理消息的路由限制。JSONL 写入器目前每次确认外部轮次的持久化位置都会读取日志。
+ - **配置标签默认对应新会话**：省略 `sessionId` 时，每次启动都会创建新的 `${id}-session-<uuid>`；如需确切的恢复或创建行为，必须显式提供稳定的 `sessionId`，而 `resumeSessionId` 要求已有持久化历史。
+ - **配置 agent 没有逐 agent persona 字段或 setup 钩子**：它们使用部署 persona；只有编程式 `ctx.agents.create()` / `resume()` 工厂选项支持带作用域的 persona 与工具组合。
+ - **没有内置轮次预算**：工具调用或 steering 会让当前轮次继续；限制失控轮次的策略必须从既有生命周期扩展点（如 `agent/turn-stopping`）执行取消。
+diff --git a/packages/core/agent-loop/src/agent.ts b/packages/core/agent-loop/src/agent.ts
+index 7ec43dd..19a0c16 100644
+--- a/packages/core/agent-loop/src/agent.ts
++++ b/packages/core/agent-loop/src/agent.ts
+@@ -19,28 +19,32 @@ import type {
+   RequestErrorAction,
+ } from '@deepseek-ai/dsh-agent'
+ import { AgentModel, agentEvents, assembleContextFor } from '@deepseek-ai/dsh-agent'
+-import type { GenerateOptions, LlmCallConfig, Message, PreparedLlmCall } from '@deepseek-ai/dsh-llm'
++import type { GenerateOptions, LlmCallConfig, Message, MessageId, PreparedLlmCall } from '@deepseek-ai/dsh-llm'
+ import {
+   LlmError,
+   createAssistantMessage,
+   createDeveloperMessage,
+   errorChain,
++  freezeMessage,
+   markAgentLoopRequest,
+ } from '@deepseek-ai/dsh-llm'
+-import { assertNever, deepFreeze } from '@deepseek-ai/dsh-util-values'
++import { assertNever, deepEqualJson, deepFreeze } from '@deepseek-ai/dsh-util-values'
+ import type { Scope } from '@deepseek-ai/dsh-scope'
+ import { createScope } from '@deepseek-ai/dsh-scope'
+-import type { EpochHeader, RequestContext, Session, SessionId, SessionSeq, TurnEndReason, UserMessage } from '@deepseek-ai/dsh-session'
++import type { EpochHeader, RequestContext, Session, SessionEvent, SessionId, SessionSeq, TurnEndReason, UserMessage } from '@deepseek-ai/dsh-session'
+ import { canonicalHeader, headerEquals, ToolCallRecovery } from '@deepseek-ai/dsh-session'
++import type { SessionHandle } from '@deepseek-ai/dsh-session-persistence'
+ import { renderContextSections, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
+ import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
+ import { ToolActivationError, ToolBatchExecutionError } from '@deepseek-ai/dsh-tools'
+ import type { ResolvedToolSet } from '@deepseek-ai/dsh-tools'
+ import type { Context } from '@deepseek-ai/cordis'
+-import { ReactLoopInbox } from './inbox.ts'
++import { ReactLoopInbox, type InboxAdmission } from './inbox.ts'
+ import { RuntimeContextProjection } from './runtime-context.ts'
+ import { AssistantStreamAttempt } from './assistant-stream.ts'
+ import { SystemPromptProjection } from './runtime-context.ts'
++import { isTurnExecutorSelection, sameTurnSelection, turnExecutorError, turnExecutorOutcome } from './turn-executor.ts'
++import type { TurnExecution, TurnExecutorRegistration, TurnExecutorRegistry, TurnExecutorResult, TurnInputAdmission } from './turn-executor.ts'
+ 
+ /** Projected facts consumed by this driver; registration stays with the factory. */
+ interface LoopProjections {
+@@ -58,7 +62,17 @@ type Phase =
+     lastTurn: number
+     wakeRequested: boolean
+   }
+-  | { kind: 'running'; abort: AbortController; turn: number; step: number; wakeRequested: boolean }
++  | {
++    kind: 'running'
++    abort: AbortController
++    turn: number
++    step: number
++    wakeRequested: boolean
++    executorTurn?: boolean
++    ordinarySelection?: Readonly<ModelSelection> | undefined
++  }
++
++type RunningPhase = Extract<Phase, { kind: 'running' }>
+ 
+ type StepEndReason = Extract<TurnEndReason, { kind: 'completed' | 'max-tokens' }>
+ 
+@@ -133,6 +147,11 @@ export class ReactLoopAgent implements Agent {
+   private readonly systemPrompt: SystemPromptProjection
+   /** Identities fully frozen by this loop; weak references do not retain replaced history. */
+   private readonly frozenMessages = new WeakSet<Message>()
++  private readonly turnTickets = new WeakMap<UserMessage, {
++    readonly registration: TurnExecutorRegistration
++    readonly selection: Readonly<ModelSelection>
++  }>()
++  private readonly readModelSelection: () => ModelSelectionProjectionState
+ 
+   constructor(
+     private loopCtx: Context,
+@@ -142,13 +161,22 @@ export class ReactLoopAgent implements Agent {
+     projections: LoopProjections,
+     lastTurn: number,
+     private readonly lifetimeSignal: AbortSignal,
++    private readonly turnExecutors?: TurnExecutorRegistry,
++    private readonly writer?: SessionHandle,
+   ) {
+     this.requestSurfaceGeneration = session.surface.contentGeneration
+     this.dispatch = agentEvents(loopCtx, this)
+     this.scope = createScope(loopCtx, this)
+     this.ctx = this.scope.ctx
+-    this.model = new AgentModel(projections.modelSelection, session, options)
+-    this.inbox = new ReactLoopInbox(projections.inbox, session, this.dispatch)
++    this.readModelSelection = projections.modelSelection
++    this.model = new AgentModel(projections.modelSelection, session, options, (selection) => {
++      const current = this.model.current()
++      if ((isTurnExecutorSelection(current) || isTurnExecutorSelection(selection))
++        && !sameTurnSelection(current, selection) && this.inbox.hasPending) {
++        throw turnExecutorError('TURN_SELECTION_BUSY', 'Remove or finish the queued input before switching turn routes.')
++      }
++    })
++    this.inbox = new ReactLoopInbox(projections.inbox, session, this.dispatch, this.admitTurnInput.bind(this))
+     this.phase = { kind: 'idle', lastTurn }
+     this.runtimeContext = new RuntimeContextProjection(this.ctx, session)
+     this.systemPrompt = new SystemPromptProjection(session)
+@@ -173,10 +201,62 @@ export class ReactLoopAgent implements Agent {
+     // Captured before the insertion so a reentrant cancel from a splice observer cannot reclassify it.
+     const wakingAfterAbort = wakeup && this.phase.kind !== 'idle' && this.phase.abort.signal.aborted
+     const resolvedTarget = wakingAfterAbort ? 'next-turn' : target
+-    this.inbox.splice(resolvedTarget, Infinity, 0, [message])
++    const delivery = target === 'next-turn' && wakeup ? 'followup' : target === 'next-step' && !wakeup ? 'inject' : undefined
++    this.inbox.deliver(resolvedTarget, message, delivery)
+     if (wakeup) this.wakeDriver(wakingAfterAbort)
+   }
+ 
++  private assertTurnAgent(): void {
++    if (this.lifetimeSignal.aborted || this.loopCtx.agents.get(this.id) !== this
++      || this.loopCtx.sessions.get(this.id) !== this.session || this.loopCtx.agents.isSessionArchived(this)) {
++      throw turnExecutorError('TURN_INPUT_REJECTED', 'This Session cannot run an external turn.')
++    }
++  }
++
++  private admitTurnInput(
++    target: InboxTarget, messages: readonly UserMessage[], previous: UserMessage | undefined, delivery?: 'followup' | 'inject',
++  ): InboxAdmission | undefined {
++    const phase = this.phase
++    if (target === 'next-step' && phase.kind === 'running' && phase.executorTurn === true) {
++      throw turnExecutorError('TURN_INPUT_REJECTED', 'An external turn does not accept steering.')
++    }
++    const current = this.model.current()
++    if (!isTurnExecutorSelection(current)) return undefined
++    if (target === 'next-step' && delivery === 'inject' && phase.kind === 'running'
++      && phase.executorTurn === false && !phase.abort.signal.aborted) return undefined
++
++    const registration = this.turnExecutors?.get(current.provider)
++    if (registration === undefined) throw turnExecutorError('TURN_EXECUTOR_UNAVAILABLE', 'The selected turn executor is unavailable.')
++    if (this.writer === undefined) throw turnExecutorError('TURN_REQUIRES_PERSISTENCE', 'External turns require a stored Session.')
++    this.assertTurnAgent()
++    const [offered] = messages
++    const selection = Object.freeze(current)
++    const ticket = previous === undefined ? undefined : this.turnTickets.get(previous)
++    if (target !== 'next-turn' || messages.length !== 1 || offered === undefined
++      || (previous === undefined ? delivery !== 'followup'
++        : ticket?.registration !== registration || !sameTurnSelection(ticket.selection, selection))) {
++      throw turnExecutorError('TURN_INPUT_REJECTED', 'The external executor requires a live, queued prompt.')
++    }
++    const message = freezeMessage(offered)
++    const admission: TurnInputAdmission = previous === undefined
++      ? { phase: 'enqueue', agent: this, selection, message }
++      : { phase: 'edit', agent: this, selection, message, previous }
++    if (message.source.kind !== 'user' || message.content.length === 0
++      || !message.content.every(part => part.type === 'text')
++      || registration.executor.authorize(Object.freeze(admission)) !== true
++      || (previous !== undefined && (previous.id !== message.id || !deepEqualJson(previous.source, message.source)))
++      || !registration.available || !sameTurnSelection(this.model.current(), selection)) {
++      throw turnExecutorError('TURN_INPUT_REJECTED', 'The external executor did not authorize this text prompt.')
++    }
++    this.assertTurnAgent()
++    const { pending, lastUsed } = this.readModelSelection()
++    return {
++      input: message,
++      ...pending === null && lastUsed === null ? { recordSelection: selection } : {},
++      record: (committed) => { this.turnTickets.set(committed, { registration, selection }) },
++    }
++  }
++
+   followup(input: UserMessage): void {
+     this.send(input, 'next-turn', true)
+   }
+@@ -185,6 +265,16 @@ export class ReactLoopAgent implements Agent {
+     this.send(input, 'next-step', true)
+   }
+ 
++  promoteQueued(id: MessageId): boolean {
++    const phase = this.phase
++    if (phase.kind !== 'running' || phase.executorTurn === true
++      || isTurnExecutorSelection(this.model.current()) || this.lifetimeSignal.aborted) return false
++    const wakingAfterAbort = phase.abort.signal.aborted
++    if (!this.inbox.promote(id, wakingAfterAbort ? 'next-turn' : 'next-step')) return false
++    this.wakeDriver(wakingAfterAbort)
++    return true
++  }
++
+   inject(input: UserMessage): void {
+     this.send(input, 'next-step', false)
+   }
+@@ -291,10 +381,12 @@ export class ReactLoopAgent implements Agent {
+     if (this.phase.kind !== 'running') throw new Error(`agent "${this.id}": pre-step outside running phase`)
+     const signal = this.phase.abort.signal
+     const claimed = this.inbox.claim(target, position.turn)
+-    const selection = this.model.current()
++    const current = this.model.current()
++    const selection = isTurnExecutorSelection(current) ? this.phase.ordinarySelection : current
+     if (selection === undefined) {
+       throw new Error(`agent "${this.id}" has no provider/model: set AgentOptions.provider and AgentOptions.model or record a model selection`)
+     }
++    this.phase.ordinarySelection = selection
+     const toolSet = await this.loopCtx.tools.resolve({ agent: this, modelSelection: selection, signal })
+     try {
+       const assembly = await this.loopCtx.systemPrompt.assemble({ ...assembleContextFor(this, signal), modelSelection: selection, toolSet })
+@@ -329,6 +421,150 @@ export class ReactLoopAgent implements Agent {
+     return !headerEquals(baseline, canonicalHeader({ ...baseline, tools: [...tools] }))
+   }
+ 
++  /** Confirm the exact owned writer drained the native input or terminal event. */
++  private async checkpointExecutorTurn(boundary: SessionEvent): Promise<void> {
++    const writer = this.writer
++    if (writer === undefined) throw turnExecutorError('TURN_REQUIRES_PERSISTENCE', 'External turns require a stored Session.')
++    const routed = await this.loopCtx.sessions.flush(this.session)
++    if (routed) {
++      await writer.flush()
++      const { events } = await writer.read(boundary.seq, 1)
++      if (deepEqualJson(events[0], boundary)) return
++    }
++    throw turnExecutorError('TURN_CHECKPOINT_FAILED', 'The native Session did not persist its turn boundary.')
++  }
++
++  /** Run one native text step without assembling an LLM request or executing native tools. */
++  private async runExecutorTurn(
++    phase: RunningPhase, selection: Readonly<ModelSelection>, registration: TurnExecutorRegistration | undefined,
++  ): Promise<boolean> {
++    const { turn, abort } = phase
++    const { signal } = abort
++    let releaseLease: (() => void) | undefined
++    let input: TurnExecution | undefined
++    let live: AssistantStreamAttempt | undefined
++    let result: TurnExecutorResult | undefined
++    let reason: TurnEndReason = { kind: 'completed' }
++    let confirmed = false
++    let running = false
++    let text = ''
++    const failures: unknown[] = []
++
++    const requireAvailable = (): void => {
++      signal.throwIfAborted()
++      if (registration?.available !== true) {
++        throw turnExecutorError('TURN_EXECUTOR_UNAVAILABLE', 'The selected turn executor is unavailable.')
++      }
++      this.assertTurnAgent()
++    }
++    try {
++      requireAvailable()
++      const message = this.inbox.nextTurn[0]
++      if (this.inbox.nextStep.length !== 0) {
++        throw turnExecutorError('TURN_INPUT_REJECTED', 'An external turn cannot consume steering or injected context.')
++      }
++      if (message !== undefined) {
++        if (this.writer === undefined) throw turnExecutorError('TURN_REQUIRES_PERSISTENCE', 'External turns require a stored Session.')
++        const ticket = this.turnTickets.get(message)
++        if (registration === undefined || ticket?.registration !== registration
++          || !sameTurnSelection(ticket.selection, selection)
++          || registration.executor.authorize(Object.freeze({ phase: 'claim', agent: this, selection, message })) !== true) {
++          throw turnExecutorError('TURN_INPUT_REJECTED', 'This queued prompt has no current turn authorization.')
++        }
++        requireAvailable()
++        releaseLease = registration.retain(() => abort.abort({ kind: 'disposed' } satisfies AgentCancelCause))
++        if (releaseLease === undefined) {
++          throw turnExecutorError('TURN_EXECUTOR_UNAVAILABLE', 'The selected turn executor is unavailable.')
++        }
++        const claimed = this.inbox.claimTurn(message, turn)
++        if (claimed === undefined) throw turnExecutorError('TURN_INPUT_REJECTED', 'The queued prompt changed before admission.')
++        phase.step = 1
++        this.turnTickets.delete(message)
++        await this.checkpointExecutorTurn(claimed.consumed)
++        requireAvailable()
++        input = Object.freeze({
++          agent: this, selection, turn, message: claimed.accepted.data, signal,
++          assertDispatchable: () => {
++            if (!running) throw turnExecutorError('TURN_EXECUTOR_UNAVAILABLE', 'This turn no longer accepts dispatch.')
++            requireAvailable()
++          },
++          writeText: (fragment: string): void => {
++            if (!running || fragment.length === 0) return
++            if (live === undefined) {
++              live = this.assistantAttempt(turn, 1)
++              live.start()
++              live.push({ type: 'block-start', index: 0, blockType: 'text' })
++            }
++            text += fragment
++            live.push({ type: 'text-delta', index: 0, text: fragment })
++          },
++        })
++        running = true
++        result = await registration.executor.run(input)
++        reason = turnExecutorOutcome(result, abortedCancelCause(signal)).reason
++        confirmed = result.kind !== 'error'
++        if (result.kind === 'error') failures.push(LlmError.fromFailure(result.error))
++      }
++    } catch (error: unknown) {
++      const cause = abortedCancelCause(signal)
++      if (input === undefined && cause !== undefined && error === signal.reason) {
++        reason = { kind: 'aborted', reason: cause }
++      } else {
++        const failure = input !== undefined
++          ? { code: 'TURN_OUTCOME_UNKNOWN', message: 'The external turn ended without a confirmed result. It was not retried.' }
++          : error instanceof LlmError ? error.failure : {
++            code: 'TURN_EXECUTOR_FAILED', message: 'The external turn failed before dispatch.',
++          }
++        result = { kind: 'error', error: failure }
++        reason = { kind: 'error', error: failure }
++        failures.push(input === undefined ? error : LlmError.fromFailure(failure, { cause: error }))
++      }
++    } finally {
++      running = false
++    }
++
++    try {
++      if (live !== undefined && result !== undefined) {
++        const { finish } = turnExecutorOutcome(result, abortedCancelCause(signal))
++        const interrupted = result.kind === 'cancelled' || result.kind === 'error'
++        live.push({ type: 'block-end', index: 0, block: { type: 'text', text } })
++        live.push({ type: 'finish', reason: finish })
++        const attempt = live
++        attempt.settle('assistant/message', () => this.session.append('assistant/message', {
++          turn, step: 1, stream: attempt.stream,
++          ...interrupted ? { interrupted: true } : {},
++          message: createAssistantMessage({ content: attempt.blocks(), source: { provider: selection.provider, model: selection.model } }),
++        }, { surfaceOp: 'append' }).seq)
++      }
++    } catch (error: unknown) {
++      failures.push(error)
++      reason = { kind: 'error', error: { code: 'TURN_OUTPUT_FAILED', message: 'The external reply could not be recorded.' } }
++    } finally {
++      if (live !== undefined && !live.ended) live.abandon()
++    }
++    try {
++      if (phase.step === 1) this.session.append('step/end', { turn, step: 1 })
++      const end = this.session.append('turn/end', { turn, reason })
++      if (phase.step === 1) await this.checkpointExecutorTurn(end)
++      if (confirmed && failures.length === 0 && input !== undefined && registration !== undefined) {
++        await registration.executor.afterCommit?.(input, end)
++      }
++    } catch (error: unknown) {
++      failures.push(error)
++    } finally {
++      try {
++        if (input !== undefined && registration !== undefined) await registration.executor.release?.(input)
++      } catch (error: unknown) {
++        failures.push(error)
++      } finally {
++        releaseLease?.()
++      }
++    }
++    if (failures.length === 1) this.throwError(failures[0])
++    if (failures.length > 1) this.throwError(new AggregateError(failures, 'External turn settlement failed'))
++    return !signal.aborted && (reason.kind === 'completed' || reason.kind === 'max-tokens')
++  }
++
+   /** Open one turn before claiming its first proposed step. */
+   private async turn(): Promise<boolean> {
+     if (this.phase.kind !== 'running') {
+@@ -338,12 +574,21 @@ export class ReactLoopAgent implements Agent {
+     const { signal } = phase.abort
+     signal.throwIfAborted()
+     const turn = phase.turn + 1
++    const selection = this.model.current()
++    const route = isTurnExecutorSelection(selection) ? Object.freeze(selection) : undefined
++    const registration = route === undefined ? undefined : this.turnExecutors?.get(route.provider)
++    phase.executorTurn = route !== undefined
++    phase.ordinarySelection = route === undefined ? selection : undefined
+     try {
+       this.session.append('turn/start', { turn })
+     } catch (error: unknown) {
+       this.throwError(error)
+     }
+     phase.turn = turn
++    if (route !== undefined) {
++      if (!await this.runExecutorTurn(phase, route, registration)) return false
++      return this.advanceTurn(phase)
++    }
+     let turnEnds: TurnEndReason | null = null
+     let target: InboxTarget = 'next-turn'
+     try {
+@@ -430,6 +675,11 @@ export class ReactLoopAgent implements Agent {
+         this.throwError(error)
+       }
+     }
++    return this.advanceTurn(phase)
++  }
++
++  /** Continue the driver after a completed turn with queued work. */
++  private advanceTurn(phase: RunningPhase): boolean {
+     if (!this.inbox.hasPending) return false
+     phase.abort = new AbortController()
+     // A fresh controller makes a latch set on the old one stale: the live driver claims the queue itself.
+@@ -438,6 +688,17 @@ export class ReactLoopAgent implements Agent {
+     return true
+   }
+ 
++  private assistantAttempt(turn: number, step: number): AssistantStreamAttempt {
++    return new AssistantStreamAttempt(
++      this.session.id,
++      ++this.assistantAttemptCounter,
++      () => ++this.assistantStreamRevision,
++      turn,
++      step,
++      (frame) => { this.dispatch.emit('agent/assistant-stream', { frame }) },
++    )
++  }
++
+   private async step(decision: Extract<PreparedStep, { kind: 'enter' }>): Promise<StepEndReason | null> {
+     /* v8 ignore next -- private callers establish the running phase before executing a step */
+     if (this.phase.kind !== 'running') throw new Error(`agent "${this.id}": step outside running phase`)
+@@ -483,14 +744,7 @@ export class ReactLoopAgent implements Agent {
+       }
+       firstAttempt = false
+       const request = this.buildRequest(config, preparedCall, assembly.tools, { turn, step }, startsRequestSeries, signal)
+-      const live = new AssistantStreamAttempt(
+-        this.session.id,
+-        ++this.assistantAttemptCounter,
+-        () => ++this.assistantStreamRevision,
+-        turn,
+-        step,
+-        (frame) => { this.dispatch.emit('agent/assistant-stream', { frame }) },
+-      )
++      const live = this.assistantAttempt(turn, step)
+       let started = false
+       try {
+         const stream = preparedCall?.stream(request) ?? this.loopCtx.llm.stream(request)
+@@ -597,15 +851,11 @@ export class ReactLoopAgent implements Agent {
+             calls: toolCalls, signal, agent: this, log: { turn, step },
+             maxParallelToolCalls, toolSet: decision.toolSet,
+           })
+-          for (const context of result.additionalContexts) {
+-            this.inbox.splice('next-step', this.inbox.nextStep.length, 0, [context])
+-          }
++          for (const context of result.additionalContexts) this.inbox.appendStepContexts([context])
+           return result.concluded ? { kind: 'completed' } : null
+         } catch (error: unknown) {
+           if (!(error instanceof ToolBatchExecutionError)) throw error
+-          for (const context of error.partial.additionalContexts) {
+-            this.inbox.splice('next-step', this.inbox.nextStep.length, 0, [context])
+-          }
++          for (const context of error.partial.additionalContexts) this.inbox.appendStepContexts([context])
+           throw error.cause
+         }
+       } catch (error: unknown) {
+diff --git a/packages/core/agent-loop/src/inbox.ts b/packages/core/agent-loop/src/inbox.ts
+index affe0c6..84b9dfa 100644
+--- a/packages/core/agent-loop/src/inbox.ts
++++ b/packages/core/agent-loop/src/inbox.ts
+@@ -6,16 +6,24 @@
+ 
+ import type { MessageId } from '@deepseek-ai/dsh-llm'
+ import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
+-import type { Session, SessionEventMap, UserMessage } from '@deepseek-ai/dsh-session'
++import type { Session, SessionEvent, SessionEventMap, UserMessage } from '@deepseek-ai/dsh-session'
+ import type {
+   AgentEventDispatch,
+   Inbox as InboxContract,
+   InboxState,
+   InboxTarget,
+   InboxWireState,
++  ModelSelection,
+ } from '@deepseek-ai/dsh-agent'
+ import { z } from 'zod'
+ 
++/** Driver admission for an external queue insertion or replacement. */
++export interface InboxAdmission {
++  readonly input: UserMessage
++  readonly recordSelection?: Readonly<ModelSelection>
++  record(message: UserMessage): void
++}
++
+ /** Wire validation for pending agent input reconstructed from durable inbox splices. */
+ export const inboxProjectionSchema = z.object({
+   'next-turn': z.array(z.custom<UserMessage>()).readonly(),
+@@ -75,6 +83,7 @@ export class ReactLoopInbox implements InboxContract {
+     private readonly readState: () => InboxState,
+     private readonly session: Session,
+     private readonly dispatch: AgentEventDispatch,
++    private readonly admit?: (target: InboxTarget, inserted: readonly UserMessage[], previous: UserMessage | undefined, delivery?: 'followup' | 'inject') => InboxAdmission | undefined,
+   ) {}
+ 
+   /** Prompts awaiting individual turns. */
+@@ -112,6 +121,71 @@ export class ReactLoopInbox implements InboxContract {
+     return claimed
+   }
+ 
++  /**
++   * Consume just the expected next-turn occurrence and publish its original text with the step.
++   * @param message - the exact projected queue head.
++   * @param turn - the reserved native turn.
++   * @returns the accepted and consumed events, or undefined if the expected boundary changed.
++   */
++  claimTurn(message: UserMessage, turn: number): {
++    readonly accepted: SessionEvent<'user/message'>
++    readonly consumed: SessionEvent<'agent/inbox/spliced'>
++  } | undefined {
++    if (this.nextStep.length !== 0 || this.nextTurn[0] !== message) return undefined
++    const events = this.session.append([
++      ['step/start', { turn, step: 1 }],
++      ['user/message', message, { surfaceOp: 'append' }],
++      ['agent/inbox/spliced', { target: 'next-turn', start: 0, removedCount: 1, inserted: [] }],
++    ])
++    const [, accepted, consumed] = events
++    if (accepted?.type !== 'user/message' || consumed?.type !== 'agent/inbox/spliced') {
++      throw new Error('Turn admission did not publish its input and dequeue')
++    }
++    this.dispatch.emit('agent/inbox/claimed', { message, turn })
++    return { accepted, consumed }
++  }
++
++  /**
++   * Deliver through the driver's resolved inbox lane, which may wake the Agent.
++   * @param target - resolved inbox lane.
++   * @param message - one input occurrence.
++   * @param delivery - explicit followup or same-step injected context, when applicable.
++   */
++  deliver(target: InboxTarget, message: UserMessage, delivery?: 'followup' | 'inject'): void {
++    this.mutate(target, Infinity, 0, [message], true, delivery)
++  }
++
++  /**
++   * Move one queued occurrence to the delivery lane without losing it on append failure.
++   * @param id - the exact queued message identity.
++   * @param target - the admitted destination (next turn if a Stop already arrived).
++   * @returns whether the occurrence was still pending.
++   */
++  promote(id: MessageId, target: InboxTarget): boolean {
++    const state = this.readState()
++    const queued = state['next-turn']
++    const start = queued.findIndex(message => message.id === id)
++    const message = queued[start]
++    if (message === undefined) return false
++    const destination = state[target].length - (target === 'next-turn' ? 1 : 0)
++    const [, inserted] = this.session.append([
++      ['agent/inbox/spliced', { target: 'next-turn', start, removedCount: 1, inserted: [], outcome: 'canceled' }],
++      ['agent/inbox/spliced', { target, start: destination, inserted: [message] }],
++    ])
++    if (inserted?.type !== 'agent/inbox/spliced') throw new Error('Inbox promotion did not commit its destination')
++    this.dispatch.emit('agent/inbox/discarded', { message })
++    for (const published of inserted.data.inserted) this.dispatch.emit('agent/inbox/inserted', { message: published })
++    return true
++  }
++
++  /**
++   * Append context returned by the current ordinary tool batch.
++   * @param messages - the batch's next-step context in model order.
++   */
++  appendStepContexts(messages: UserMessage[]): void {
++    this.mutate('next-step', Infinity, 0, messages, true, 'inject')
++  }
++
+   /**
+    * Append one message to a pending list.
+    * @param target - pending list to extend.
+@@ -189,6 +263,7 @@ export class ReactLoopInbox implements InboxContract {
+     deleteCount: number,
+     inserted: UserMessage[],
+     discardRemoved: boolean,
++    delivery?: 'followup' | 'inject',
+   ): UserMessage[] {
+     const state = this.readState()
+     const inbox = state[target]
+@@ -203,6 +278,12 @@ export class ReactLoopInbox implements InboxContract {
+       inbox.length - actualStart,
+     )
+     if (actualDeleteCount === 0 && inserted.length === 0) return []
++    const removed = inbox.slice(actualStart, actualStart + actualDeleteCount)
++    const admission = inserted.length === 0 ? undefined : this.admit?.(
++      target, inserted, removed.length === 1 ? removed[0] : undefined,
++      removed.length === 0 ? delivery : undefined,
++    )
++    if (admission !== undefined) inserted = [admission.input]
+     const candidate = inbox.toSpliced(actualStart, actualDeleteCount, ...inserted)
+     const ids = new Set<string>()
+     for (const message of target === 'next-turn'
+@@ -219,8 +300,16 @@ export class ReactLoopInbox implements InboxContract {
+       inserted,
+       ...(outcome === undefined ? {} : { outcome }),
+     }
+-    const removed = inbox.slice(actualStart, actualStart + actualDeleteCount)
+-    const event = this.session.append('agent/inbox/spliced', splice)
++    const selection = admission?.recordSelection
++    const event = selection === undefined
++      ? this.session.append('agent/inbox/spliced', splice)
++      : this.session.append([['model/selection', selection], ['agent/inbox/spliced', splice]])[1]
++    if (event?.type !== 'agent/inbox/spliced') throw new Error('Inbox insertion did not commit its splice')
++    if (admission !== undefined) {
++      const [message] = event.data.inserted
++      if (message === undefined) throw new Error('Turn input is missing from its committed splice')
++      admission.record(message)
++    }
+     if (discardRemoved) {
+       for (const message of removed) this.dispatch.emit('agent/inbox/discarded', { message })
+     }
+diff --git a/packages/core/agent-loop/src/index.ts b/packages/core/agent-loop/src/index.ts
+index bda53c3..a1dca63 100644
+--- a/packages/core/agent-loop/src/index.ts
++++ b/packages/core/agent-loop/src/index.ts
+@@ -36,6 +36,10 @@ import { ReactLoopAgent } from './agent.ts'
+ import { inboxProjectionDefinition } from './inbox.ts'
+ import { DEFAULT_MAX_PARALLEL_TOOL_CALLS } from './constants.ts'
+ import type {} from './runtime-context.ts'
++import { TurnExecutorRegistry } from './turn-executor.ts'
++import type { TurnExecutor, TurnExecutorProvider } from './turn-executor.ts'
++
++export type { TurnExecution, TurnExecutor, TurnExecutorProvider, TurnExecutorResult, TurnInputAdmission } from './turn-executor.ts'
+ 
+ /** Fiber states that cannot own or serve a new lifecycle. */
+ const INACTIVE_STATES: ReadonlySet<FiberState> = new Set([
+@@ -308,6 +312,7 @@ export class AgentLoop extends Service implements AgentFactory {
+   /** Validated configuration owned by the agent-loop service. */
+   readonly config: Config
+   private readonly ownership: FactoryOwnership
++  private readonly turnExecutors = new TurnExecutorRegistry()
+   /** Plain holder prevents Cordis from re-tracing the factory's dependency context through a caller shadow. */
+   private readonly runtime: { ctx: Context }
+   private modelProjectionHandle!: ProjectionHandle<ModelSelectionProjectionState>
+@@ -369,6 +374,17 @@ export class AgentLoop extends Service implements AgentFactory {
+     }
+   }
+ 
++  /**
++   * Register a whole-turn executor on the calling plugin's fiber. Reserved routes never fall through to an LLM adapter.
++   * @param provider - unique, stable `turn:` route for this Host.
++   * @param executor - the provider's admission, execution, and cleanup methods.
++   * @returns a disposer that revokes new work, cancels admitted turns, and awaits their settlement.
++   */
++  registerTurnExecutor(provider: TurnExecutorProvider, executor: TurnExecutor): () => Promise<void> {
++    if (!this.ownership.isActive()) throw new Error('agent loop is not active')
++    return this.turnExecutors.register(this.ctx, provider, executor)
++  }
++
+   private applyConfiguredRoute(agent: Agent, options: AgentOptions): void {
+     const { provider, model, reasoningEffort } = options
+     if (!provider || !model) return
+@@ -570,11 +586,12 @@ export class AgentLoop extends Service implements AgentFactory {
+         modelSelection: this.modelProjectionHandle.readerFor(session),
+         inbox: this.inboxProjectionHandle.readerFor(session),
+       }
++      const { turnExecutors } = this
+       unfollowOwner = ownerCtx.effect(function* () {
+         const created = machine = new ReactLoopAgent(
+           loopCtx, id, agentOptions, session,
+           projections,
+-          lastTurn, abort.signal,
++          lastTurn, abort.signal, turnExecutors, stored?.handle,
+         )
+         machineReady.resolve()
+         // Adopt the scope on its original fiber so it cannot unload before teardown.
+diff --git a/packages/core/agent-loop/src/turn-executor.ts b/packages/core/agent-loop/src/turn-executor.ts
+new file mode 100644
+index 0000000..5520b38
+--- /dev/null
++++ b/packages/core/agent-loop/src/turn-executor.ts
+@@ -0,0 +1,194 @@
++/** Registrations for text-only turn execution on the native Session driver. */
++import type { Context } from '@deepseek-ai/cordis'
++import type { Agent, ModelSelection } from '@deepseek-ai/dsh-agent'
++import { LlmError, type FinishReason, type LlmFailure } from '@deepseek-ai/dsh-llm'
++import type { AgentCancelCause, SessionEvent, TurnEndReason, UserMessage } from '@deepseek-ai/dsh-session'
++import { assertNever } from '@deepseek-ai/dsh-util-values'
++
++/** A provider route whose execution is reserved to the turn executor registry. */
++export type TurnExecutorProvider = `turn:${string}`
++
++/** The exact message and selection at an inbox admission point. */
++export type TurnInputAdmission = {
++  readonly agent: Agent
++  readonly selection: Readonly<ModelSelection>
++  readonly message: UserMessage
++} & (
++  | { readonly phase: 'enqueue' | 'claim'; readonly previous?: never }
++  | { readonly phase: 'edit'; readonly previous: UserMessage }
++)
++
++/** One consumed, checkpointed turn. Only the driver can publish its Session events. */
++export interface TurnExecution {
++  readonly agent: Agent
++  readonly selection: Readonly<ModelSelection>
++  readonly turn: number
++  readonly message: UserMessage
++  /** Aborted by native Stop, owner disposal, or executor revocation. */
++  readonly signal: AbortSignal
++  /**
++   * Recheck the live Agent, registration, archive state and cancellation immediately before dispatch, without an intervening await.
++   * @throws when dispatch is no longer authorized or the execution has returned.
++   */
++  assertDispatchable(): void
++  /**
++   * Publish visible assistant text. Calls after the executor's terminal return have no effect.
++   * @param text - a validated output fragment; the provider owns its protocol and size limits.
++   */
++  writeText(text: string): void
++}
++
++/** An observed terminal outcome, or an explicit failure such as unknown delivery. */
++export type TurnExecutorResult =
++  | { readonly kind: 'completed' | 'max-tokens' | 'cancelled' }
++  | { readonly kind: 'error'; readonly error: LlmFailure }
++
++/** A trusted Host contribution; it owns authorization, external delivery and process cleanup. */
++export interface TurnExecutor {
++  /**
++   * Synchronously authorize the exact occurrence; do not mutate the Agent or start I/O.
++   * @param input - queued input, its edit, or its proposed claim. Source fields alone are not authority.
++   * @returns true to admit this occurrence at this point.
++   */
++  authorize(input: TurnInputAdmission): boolean
++  /**
++   * Run once after native input is durable. Recheck before sending and await terminal delivery or confirmed loss of contact.
++   * A thrown abort is local; report external cancellation only after a known terminal acknowledgement.
++   * @param input - the driver's execution capabilities; do not open, claim, or append turn events yourself.
++   * @returns the terminal outcome; return an error for unknown delivery. The driver does not retry.
++   */
++  run(input: TurnExecution): Promise<TurnExecutorResult>
++  /**
++   * Commit provider bookkeeping for a known terminal result after the exact native end is durable.
++   * @param input - the execution whose terminal result was recorded.
++   * @param end - the committed native end event.
++   */
++  afterCommit?(input: TurnExecution, end: SessionEvent<'turn/end'>): Promise<void>
++  /**
++   * Await cleanup of any execution resources, including on failure. Do not await disposal of your own registration here.
++   * @param input - the execution being released.
++   */
++  release?(input: TurnExecution): Promise<void>
++}
++
++/**
++ * Distinguish reserved turn routes even when their executor is absent.
++ * @param selection - the Session's current model selection.
++ * @returns whether the selection belongs exclusively to a turn executor.
++ */
++export function isTurnExecutorSelection(
++  selection: Readonly<ModelSelection> | undefined,
++): selection is Readonly<ModelSelection> & { provider: TurnExecutorProvider } {
++  return selection !== undefined && selection.provider.startsWith('turn:')
++}
++
++/**
++ * Keep an explicit effort distinct from the provider default on queued occurrences.
++ * @param left - the current or previous choice.
++ * @param right - the full expected choice.
++ * @returns whether the choices agree.
++ */
++export function sameTurnSelection(left: Readonly<ModelSelection> | undefined, right: Readonly<ModelSelection>): boolean {
++  return left?.provider === right.provider && left.model === right.model && left.reasoningEffort === right.reasoningEffort
++}
++
++/**
++ * Record a safe, non-retryable turn failure in the existing native error format.
++ * @param code - stable turn-specific failure code.
++ * @param message - user-facing reason.
++ * @returns a coded error with native failure facts.
++ */
++export function turnExecutorError(code: string, message: string): LlmError {
++  return LlmError.fromFailure({ code, message })
++}
++
++/**
++ * Translate a provider's terminal result to the native turn and stream facts.
++ * @param result - the observed external result.
++ * @param cause - copied native cancellation cause, when requested.
++ * @returns the native reason and assistant finish; a returned terminal result wins over a racing Stop.
++ */
++export function turnExecutorOutcome(result: TurnExecutorResult, cause: AgentCancelCause | undefined): {
++  readonly reason: TurnEndReason
++  readonly finish: FinishReason
++} {
++  switch (result.kind) {
++    case 'completed': return { reason: { kind: 'completed' }, finish: { kind: 'stop' } }
++    case 'max-tokens': return { reason: { kind: 'max-tokens' }, finish: { kind: 'max-tokens' } }
++    case 'cancelled': return {
++      reason: { kind: 'aborted', reason: cause ?? { kind: 'legacy' } },
++      finish: { kind: 'aborted', failure: { code: 'ABORTED', message: 'The turn was cancelled.' } },
++    }
++    case 'error': return { reason: { kind: 'error', error: result.error }, finish: { kind: 'error', failure: result.error } }
++    default: return assertNever(result)
++  }
++}
++
++/** One registration generation, with jobs retained through durable end and cleanup. */
++export class TurnExecutorRegistration {
++  private active = true
++  private readonly jobs = new Map<() => void, Promise<void>>()
++
++  constructor(readonly executor: TurnExecutor) {}
++
++  /** Whether this generation can take work or permit a dispatch. */
++  get available(): boolean { return this.active }
++
++  /**
++   * Retain one admitted job until it closes. The caller releases it exactly once in a finally block.
++   * @param stop - cancels this job through the native turn's abort controller.
++   * @returns the release function, or undefined when the generation has been revoked.
++   */
++  retain(stop: () => void): (() => void) | undefined {
++    if (!this.active) return undefined
++    const completion = Promise.withResolvers<void>()
++    this.jobs.set(stop, completion.promise)
++    return () => {
++      this.jobs.delete(stop)
++      completion.resolve()
++    }
++  }
++
++  /** Stop admitted jobs and wait for their cleanup before the provider fiber can unload. */
++  async revoke(): Promise<void> {
++    this.active = false
++    const jobs = [...this.jobs]
++    for (const [stop] of jobs) stop()
++    await Promise.all(jobs.map(([, done]) => done))
++  }
++}
++
++/** AgentLoop-owned registrations, keyed by reserved provider route. */
++export class TurnExecutorRegistry {
++  private readonly providers = new Map<TurnExecutorProvider, TurnExecutorRegistration>()
++
++  /**
++   * Add one provider to the calling fiber; prevent a same-id replacement during cleanup.
++   * @param ctx - the registering plugin's Context.
++   * @param provider - reserved, stable provider route.
++   * @param executor - lifecycle implementation.
++   * @returns a disposer that drains admitted executions.
++   */
++  register(ctx: Context, provider: TurnExecutorProvider, executor: TurnExecutor): () => Promise<void> {
++    if (!/^turn:[a-z0-9][a-z0-9.-]*$/u.test(provider)) throw new TypeError('Invalid turn executor provider')
++    return ctx.effect(() => {
++      if (this.providers.has(provider)) throw turnExecutorError('DUPLICATE_TURN_EXECUTOR', `Turn executor "${provider}" is already registered.`)
++      const registration = new TurnExecutorRegistration(executor)
++      this.providers.set(provider, registration)
++      return async () => {
++        await registration.revoke()
++        this.providers.delete(provider)
++      }
++    }, `agentLoop.registerTurnExecutor(${provider})`)
++  }
++
++  /**
++   * Capture one live generation before the driver publishes its turn start.
++   * @param provider - the selected reserved route.
++   * @returns the live registration, or undefined for absent and revoking providers.
++   */
++  get(provider: TurnExecutorProvider): TurnExecutorRegistration | undefined {
++    const candidate = this.providers.get(provider)
++    return candidate?.available === true ? candidate : undefined
++  }
++}
+diff --git a/packages/core/agent-loop/tests/turn-executor.spec.ts b/packages/core/agent-loop/tests/turn-executor.spec.ts
+new file mode 100644
+index 0000000..dee5993
+--- /dev/null
++++ b/packages/core/agent-loop/tests/turn-executor.spec.ts
+@@ -0,0 +1,578 @@
++/** Reserved turn routes through the native Agent inbox, stream, and JSONL writer. */
++import { mkdtemp, rm } from 'node:fs/promises'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { Context } from '@deepseek-ai/cordis'
++import AgentRegistry, { type Agent, type ModelSelection } from '@deepseek-ai/dsh-agent'
++import AgentLoop, { type TurnExecution, type TurnExecutor } from '@deepseek-ai/dsh-agent-loop'
++import LlmRuntime, { createUserMessage, errorChain, expandAssistantStream, freezeMessage } from '@deepseek-ai/dsh-llm'
++import SessionStore, { SessionId, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
++import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
++import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
++import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
++import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
++import Tools, { defineTool } from '@deepseek-ai/dsh-tools'
++import { expect, it, onTestFinished, vi } from 'vitest'
++import { MockAdapter, textResponse, toolCallResponse } from './mock-adapter.ts'
++
++const SYNTHETIC = { provider: 'turn:synthetic', model: 'synthetic' } as const satisfies ModelSelection
++const ORDINARY = { provider: 'mock', model: 'native' } as const satisfies ModelSelection
++
++function message(text: string) {
++  return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
++}
++
++async function harness({
++  selection = SYNTHETIC, adapter = new MockAdapter([textResponse('ordinary reply')]), persistent = true, resume,
++}: {
++  selection?: ModelSelection
++  adapter?: MockAdapter
++  persistent?: boolean
++  resume?: { header: SessionHeader; events: readonly SessionEvent[] }
++} = {}) {
++  const ctx = new Context()
++  const root = persistent ? await mkdtemp(join(tmpdir(), 'dsh-turn-executor-')) : undefined
++  const unblocks: (() => void)[] = []
++  onTestFinished(async () => {
++    for (const unblock of unblocks) unblock()
++    try {
++      await ctx.fiber.dispose()
++    } finally {
++      if (root !== undefined) await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
++    }
++  })
++  await ctx.plugin(LlmRuntime)
++  await ctx.plugin(SessionStore)
++  await ctx.plugin(SessionProjectionRegistry)
++  await ctx.plugin(SystemPrompt)
++  await ctx.plugin(Tools)
++  await ctx.plugin(NativeToolExecutor)
++  await ctx.plugin(AgentRegistry)
++  if (root !== undefined) await ctx.plugin(JsonlSessionPersistence, { root, compression: 'none' })
++  await ctx.plugin(AgentLoop, { agents: [] })
++  ctx.llm.registerAdapter([ORDINARY.provider], adapter)
++  async function restore({ header, events }: NonNullable<typeof resume>) {
++    {
++      await using writer = await ctx.sessionPersistence.create(header)
++      await writer.append(events)
++    }
++    return ctx.agents.resume({ resumeSessionId: header.id, agentOptions: ORDINARY })
++  }
++  const { agent } = resume === undefined
++    ? await ctx.agents.create({ sessionId: SessionId('turn-spec'), agentOptions: selection })
++    : await restore(resume)
++
++  function gate<T = undefined>() {
++    const entered = Promise.withResolvers<T>()
++    const proceed = Promise.withResolvers<undefined>()
++    const open = () => { proceed.resolve(undefined) }
++    unblocks.push(open)
++    return {
++      entered: entered.promise,
++      open,
++      async hold(value: T, signal?: AbortSignal): Promise<void> {
++        entered.resolve(value)
++        if (signal?.aborted) return
++        signal?.addEventListener('abort', open, { once: true })
++        try {
++          await proceed.promise
++        } finally {
++          signal?.removeEventListener('abort', open)
++        }
++      },
++    }
++  }
++
++  const storedEvents = async (): Promise<readonly SessionEvent[]> => {
++    await using reader = await ctx.sessionPersistence.open(agent.id, 'read')
++    return (await reader.read()).events
++  }
++  return { ctx, agent, adapter, gate, storedEvents }
++}
++
++function mountExecutor(ctx: Context, executor: TurnExecutor) {
++  return ctx.plugin({
++    inject: ['agentLoop'],
++    apply(owner: Context) { owner.agentLoop.registerTurnExecutor(SYNTHETIC.provider, executor) },
++  }).await()
++}
++
++function turnEnds(events: readonly SessionEvent[]) {
++  return events.filter(event => event.type === 'turn/end').map(event => event.data)
++}
++
++function userIds(events: readonly SessionEvent[]) {
++  return events.filter(event => event.type === 'user/message').map(event => event.data.id)
++}
++
++function observeEvents(ctx: Context, agent: Agent): SessionEvent[] {
++  const events: SessionEvent[] = []
++  ctx.on('session/event', (session, event) => { if (session === agent.session) events.push(event) })
++  return events
++}
++
++async function duringWork<T>(agent: Agent, reached: Promise<T>): Promise<T> {
++  return Promise.race([reached, agent.whenIdle().then(() => {
++    throw new Error('Agent settled before reaching the expected checkpoint')
++  })])
++}
++
++it('claims a native followup on the same Agent and checkpoints it before external dispatch', async () => {
++  const { ctx, agent, adapter, gate, storedEvents } = await harness()
++  const prompt = message('send through the turn executor')
++  const observed = observeEvents(ctx, agent)
++  const flushing = gate()
++  const admitted = vi.fn(() => true)
++  const assembled = vi.fn()
++  const preStep = vi.fn()
++  const execute = vi.fn(async () => 'ordinary tool output')
++  ctx.tools.register(defineTool({
++    name: 'ordinary_tool', description: 'An ordinary model tool.', parameters: {},
++    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
++    execute,
++  }), { when: admitted })
++  ctx.on('system-prompt/assemble', (_assembly, _context, next) => { assembled(); return next() })
++  ctx.on('agent/pre-step', (_input, next) => { preStep(); return next() })
++  const claimed = vi.fn()
++  ctx.on('agent/inbox/claimed', ({ agent: subject, message: input, turn }) => { claimed(subject === agent, input.id, turn) })
++  ctx.on('session/flush', (session) => {
++    if (session === agent.session && userIds(observed).includes(prompt.id)) return flushing.hold(undefined)
++  })
++  const dispatch = vi.fn()
++  const run = vi.fn<TurnExecutor['run']>(async (input) => {
++    const beforeDispatch = await storedEvents()
++    input.assertDispatchable()
++    dispatch(beforeDispatch)
++    input.writeText('synthetic ')
++    input.writeText('reply')
++    return { kind: 'completed' }
++  })
++  await mountExecutor(ctx, { authorize: () => true, run })
++
++  agent.followup(prompt)
++  await duringWork(agent, flushing.entered)
++  expect(run).not.toHaveBeenCalled()
++  expect(claimed).toHaveBeenCalledExactlyOnceWith(true, prompt.id, 1)
++  flushing.open()
++  await agent.whenIdle()
++
++  expect(run.mock.calls.map(([input]) => ({
++    sameAgent: input.agent === agent, message: input.message, selection: input.selection, turn: input.turn,
++  }))).toEqual([{ sameAgent: true, message: prompt, selection: SYNTHETIC, turn: 1 }])
++  expect(ctx.agents.list().map(subject => subject === agent)).toEqual([true])
++  expect(ctx.sessions.get(agent.id) === agent.session).toBe(true)
++  expect(dispatch).toHaveBeenCalledExactlyOnceWith(expect.arrayContaining([
++    expect.objectContaining({ type: 'agent/inbox/spliced', data: { target: 'next-turn', start: 0, inserted: [prompt] } }),
++    expect.objectContaining({ type: 'turn/start', data: { turn: 1 } }),
++    expect.objectContaining({ type: 'user/message', data: prompt }),
++  ]))
++  expect(admitted).not.toHaveBeenCalled()
++  expect(assembled).not.toHaveBeenCalled()
++  expect(preStep).not.toHaveBeenCalled()
++  expect(execute).not.toHaveBeenCalled()
++  expect(adapter.requests).toEqual([])
++  const events = await storedEvents()
++  expect(events.some(event => ['system/message', 'request/header', 'tool/call'].includes(event.type))).toBe(false)
++  expect(events.find(event => event.type === 'assistant/message')).toMatchObject({
++    data: { message: { content: [{ type: 'text', text: 'synthetic reply' }] } },
++  })
++  expect(turnEnds(events)).toEqual([{ turn: 1, reason: { kind: 'completed' } }])
++})
++
++it('checks authorization on enqueue, edit, and claim before the requested action takes effect', async () => {
++  const { ctx, agent, gate, storedEvents } = await harness()
++  const maintenance = gate()
++  const denied = message('refuse at enqueue')
++  const pending = message('original queued text')
++  const edit = freezeMessage({ ...pending, content: [{ type: 'text', text: 'refuse the edit' }] })
++  const observed = observeEvents(ctx, agent)
++  const errors: unknown[] = []
++  ctx.on('agent/error', ({ error }) => { errors.push(error) })
++  const authorize = vi.fn<TurnExecutor['authorize']>(({ phase, message }) => (
++    phase === 'enqueue' && message.id !== denied.id
++  ))
++  const run = vi.fn<TurnExecutor['run']>(async () => ({ kind: 'completed' }))
++  await mountExecutor(ctx, { authorize, run })
++
++  expect(() => agent.followup(denied)).toThrow(expect.objectContaining({ code: 'TURN_INPUT_REJECTED' }))
++  expect(observed).toEqual([])
++  const work = agent.runMaintenance(() => maintenance.hold(undefined))
++  agent.followup(pending)
++  const beforeEdit = observed.length
++  expect(() => { agent.inbox.replace(pending.id, edit) }).toThrow(expect.objectContaining({ code: 'TURN_INPUT_REJECTED' }))
++  expect(agent.inbox.nextTurn).toEqual([pending])
++  expect(observed).toHaveLength(beforeEdit)
++  maintenance.open()
++  await work
++  await agent.whenIdle()
++
++  expect(authorize.mock.calls.map(([input]) => [input.phase, input.message])).toEqual([
++    ['enqueue', denied], ['enqueue', pending], ['edit', edit], ['claim', pending],
++  ])
++  const edited = authorize.mock.calls.find(([input]) => input.phase === 'edit')?.[0]
++  expect(edited?.agent === agent).toBe(true)
++  expect(edited?.selection).toEqual(SYNTHETIC)
++  expect(edited?.previous).toEqual(pending)
++  expect(errors).toEqual([expect.objectContaining({ code: 'TURN_INPUT_REJECTED' })])
++  expect(run).not.toHaveBeenCalled()
++  expect(userIds(await storedEvents())).toEqual([])
++})
++
++it('locks the lane and external model while input is queued', async () => {
++  const { ctx, agent, gate, adapter } = await harness({ selection: ORDINARY })
++  const nativeGate = gate()
++  const externalGate = gate()
++  const run = vi.fn<TurnExecutor['run']>(async (input) => {
++    input.assertDispatchable()
++    input.writeText('external reply')
++    return { kind: 'completed' }
++  })
++  await mountExecutor(ctx, { authorize: () => true, run })
++
++  const nativeWork = agent.runMaintenance(() => nativeGate.hold(undefined))
++  agent.followup(message('queued for the ordinary model'))
++  expect(() => agent.model.select(SYNTHETIC)).toThrow(expect.objectContaining({ code: 'TURN_SELECTION_BUSY' }))
++  expect(agent.model.current()).toEqual(ORDINARY)
++  nativeGate.open()
++  await nativeWork
++  await agent.whenIdle()
++  expect(adapter.requests.map(({ provider, model }) => ({ provider, model }))).toEqual([ORDINARY])
++
++  agent.model.select(SYNTHETIC)
++  const externalWork = agent.runMaintenance(() => externalGate.hold(undefined))
++  const queued = message('queued for the external model')
++  agent.followup(queued)
++  expect(() => agent.model.select(ORDINARY)).toThrow(expect.objectContaining({ code: 'TURN_SELECTION_BUSY' }))
++  expect(() => agent.model.select({ ...SYNTHETIC, model: 'replacement' })).toThrow(expect.objectContaining({ code: 'TURN_SELECTION_BUSY' }))
++  expect(agent.model.current()).toEqual(SYNTHETIC)
++  expect(agent.inbox.nextTurn).toEqual([queued])
++  externalGate.open()
++  await externalWork
++  await agent.whenIdle()
++  expect(run.mock.calls.map(([input]) => ({ id: input.message.id, selection: input.selection })))
++    .toEqual([{ id: queued.id, selection: SYNTHETIC }])
++})
++
++it('keeps ordinary tool continuation on its original lane after selecting an external route', async () => {
++  const adapter = new MockAdapter([toolCallResponse('lookup-1', 'lookup', {}), textResponse('native continuation')])
++  const { ctx, agent, gate, storedEvents } = await harness({ selection: ORDINARY, adapter })
++  const tool = gate()
++  const errors: { turn: number; step: number; message: string }[] = []
++  ctx.on('agent/error', ({ agent: subject, turn, step, error }) => {
++    if (subject === agent) errors.push({ turn, step, message: errorChain(error) })
++  })
++  ctx.tools.register(defineTool({
++    name: 'lookup', description: 'Read fixture data.', parameters: {},
++    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
++    async execute() { await tool.hold(undefined); return 'tool response' },
++  }))
++  const run = vi.fn<TurnExecutor['run']>(async (input) => {
++    input.assertDispatchable()
++    input.writeText('new turn')
++    return { kind: 'completed' }
++  })
++  await mountExecutor(ctx, { authorize: () => true, run })
++
++  agent.followup(message('ordinary prompt'))
++  await duringWork(agent, tool.entered)
++  agent.model.select(SYNTHETIC)
++  expect(agent.model.current()).toEqual(SYNTHETIC)
++  tool.open()
++  await agent.whenIdle()
++
++  expect(errors).toEqual([])
++  expect(run.mock.calls.map(([input]) => input.turn)).toEqual([])
++  expect(adapter.requests.map(({ provider, model }) => ({ provider, model }))).toEqual([ORDINARY, ORDINARY])
++  const toolOutput = adapter.requests[1]?.messages.find(input => input.role === 'tool' && input.toolCallId === 'lookup-1')
++  expect(toolOutput?.content).toEqual([{ type: 'text', text: 'tool response' }])
++  const externalPrompt = message('next prompt')
++  agent.followup(externalPrompt)
++  await agent.whenIdle()
++  expect(errors).toEqual([])
++  expect(run.mock.calls.map(([input]) => ({
++    sameAgent: input.agent === agent, turn: input.turn, id: input.message.id,
++  }))).toEqual([{ sameAgent: true, turn: 2, id: externalPrompt.id }])
++  const events = await storedEvents()
++  const steps = events.flatMap(event => event.type === 'step/start' && event.data.turn === 1 ? [event.data.step] : [])
++  expect(steps).toEqual([1, 2])
++  expect(turnEnds(events)).toEqual([{ turn: 1, reason: { kind: 'completed' } }, { turn: 2, reason: { kind: 'completed' } }])
++})
++
++it('commits the streamed tail on Stop and requires a live ticket to claim preserved input', async () => {
++  const { ctx, agent, adapter, gate, storedEvents } = await harness()
++  const first = message('stop this turn')
++  const queued = message('keep me queued')
++  const wake = message('wake the Agent')
++  const written = gate<AbortSignal>()
++  const liveText: string[] = []
++  ctx.on('agent/assistant-stream', ({ agent: subject, frame }) => {
++    if (subject === agent && frame.type === 'chunk' && frame.chunk.type === 'text-delta') liveText.push(frame.chunk.text)
++  })
++  const run = vi.fn<TurnExecutor['run']>(async (input) => {
++    input.assertDispatchable()
++    if (input.message.id !== first.id) {
++      input.writeText('next response')
++      return { kind: 'completed' }
++    }
++    input.writeText('partial ')
++    input.writeText('tail')
++    await written.hold(input.signal, input.signal)
++    return { kind: 'cancelled' }
++  })
++  await mountExecutor(ctx, { authorize: () => true, run })
++
++  agent.followup(first)
++  const signal = await duringWork(agent, written.entered)
++  expect(liveText).toEqual(['partial ', 'tail'])
++  agent.followup(queued)
++  agent.cancel({ kind: 'user' }, { keepInbox: true })
++  await agent.whenIdle()
++
++  expect(signal.aborted).toBe(true)
++  expect(agent.inbox.nextTurn).toEqual([queued])
++  expect(run).toHaveBeenCalledTimes(1)
++  const events = await storedEvents()
++  const assistant = events.find(event => event.type === 'assistant/message')
++  expect(assistant?.data).toMatchObject({ interrupted: true, message: { content: [{ type: 'text', text: 'partial tail' }] } })
++  expect(assistant === undefined ? [] : expandAssistantStream(assistant.data.stream)
++    .flatMap(({ chunk }) => chunk.type === 'text-delta' ? [chunk.text] : [])).toEqual(liveText)
++  expect(turnEnds(events)).toEqual([{ turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } }])
++  expect(userIds(events)).toEqual([first.id])
++
++  const cold = await harness({ resume: { header: agent.session.header, events } })
++  const coldErrors: unknown[] = []
++  cold.ctx.on('agent/error', ({ error }) => { coldErrors.push(error) })
++  const replacement = vi.fn<TurnExecutor['run']>(async () => ({ kind: 'completed' }))
++  await mountExecutor(cold.ctx, { authorize: () => true, run: replacement })
++  expect(cold.agent.model.current()).toEqual(SYNTHETIC)
++  expect(cold.agent.inbox.nextTurn).toEqual([queued])
++  expect(() => cold.agent.model.select(ORDINARY)).toThrow(expect.objectContaining({ code: 'TURN_SELECTION_BUSY' }))
++  cold.agent.followup(message('wake after cold resume'))
++  await cold.agent.whenIdle()
++  expect(coldErrors).toContainEqual(expect.objectContaining({ code: 'TURN_INPUT_REJECTED' }))
++  expect(cold.agent.inbox.nextTurn[0]).toEqual(queued)
++  expect(replacement).not.toHaveBeenCalled()
++  expect(cold.adapter.requests).toEqual([])
++  expect(userIds(await cold.storedEvents())).toEqual([first.id])
++
++  agent.followup(wake)
++  await agent.whenIdle()
++  expect(run.mock.calls.map(([input]) => input.message.id)).toEqual([first.id, queued.id, wake.id])
++  expect(userIds(await storedEvents())).toEqual([first.id, queued.id, wake.id])
++  expect(adapter.requests).toEqual([])
++})
++
++it('awaits a durable native end before afterCommit, then releases the same execution', async () => {
++  const { ctx, agent, gate, storedEvents } = await harness()
++  const endFlush = gate()
++  const commit = gate()
++  const observed = observeEvents(ctx, agent)
++  ctx.on('session/flush', (session) => {
++    if (session === agent.session && observed.at(-1)?.type === 'turn/end') return endFlush.hold(undefined)
++  })
++  const run = vi.fn<TurnExecutor['run']>(async (input) => {
++    input.assertDispatchable()
++    input.writeText('token-limited answer')
++    return { kind: 'max-tokens' }
++  })
++  let durableEnd: SessionEvent<'turn/end'> | undefined
++  const afterCommit = vi.fn<NonNullable<TurnExecutor['afterCommit']>>(async () => {
++    durableEnd = (await storedEvents()).find(event => event.type === 'turn/end')
++    await commit.hold(undefined)
++  })
++  const release = vi.fn<NonNullable<TurnExecutor['release']>>(async () => {})
++  await mountExecutor(ctx, { authorize: () => true, run, afterCommit, release })
++
++  agent.followup(message('limited output'))
++  await duringWork(agent, endFlush.entered)
++  expect(afterCommit).not.toHaveBeenCalled()
++  expect(release).not.toHaveBeenCalled()
++  endFlush.open()
++  await duringWork(agent, commit.entered)
++  expect(durableEnd).toMatchObject({ type: 'turn/end', data: { turn: 1, reason: { kind: 'max-tokens' } } })
++  const input = run.mock.calls[0]?.[0]
++  expect(afterCommit.mock.calls.map(([committedInput, end]) => ({ sameInput: committedInput === input, end })))
++    .toEqual([{ sameInput: true, end: durableEnd }])
++  expect(release).not.toHaveBeenCalled()
++  commit.open()
++  await agent.whenIdle()
++  expect(release.mock.calls.map(([releasedInput]) => releasedInput === input)).toEqual([true])
++})
++
++it.each(['input', 'end'] as const)('fails closed when the %s checkpoint fails', async (checkpoint) => {
++  const { ctx, agent, adapter } = await harness()
++  const failure = new Error(`injected ${checkpoint} checkpoint failure`)
++  const errors: unknown[] = []
++  const observed = observeEvents(ctx, agent)
++  ctx.on('agent/error', ({ error }) => { errors.push(error) })
++  const rejected = vi.fn(() => { throw failure })
++  ctx.on('session/flush', (session) => {
++    if (session !== agent.session) return
++    const end = observed.at(-1)?.type === 'turn/end'
++    if (end === (checkpoint === 'end')) rejected()
++  })
++  const dispatch = vi.fn()
++  const run = vi.fn<TurnExecutor['run']>(async (input) => {
++    input.assertDispatchable()
++    dispatch()
++    return { kind: 'completed' }
++  })
++  const afterCommit = vi.fn(async () => {})
++  const release = vi.fn(async () => {})
++  await mountExecutor(ctx, { authorize: () => true, run, afterCommit, release })
++
++  agent.followup(message('checkpoint this turn'))
++  await agent.whenIdle()
++
++  expect(rejected).toHaveBeenCalledTimes(1)
++  expect(dispatch).toHaveBeenCalledTimes(checkpoint === 'input' ? 0 : 1)
++  expect(release).toHaveBeenCalledTimes(checkpoint === 'input' ? 0 : 1)
++  expect(afterCommit).not.toHaveBeenCalled()
++  expect(errors).toHaveLength(1)
++  expect(adapter.requests).toEqual([])
++})
++
++it('separates a local abort after dispatch from a confirmed external cancellation', async () => {
++  const { ctx, agent, adapter, gate, storedEvents } = await harness()
++  const unknown = message('lose contact after sending')
++  const cancelled = message('wait for a cancellation acknowledgement')
++  const dispatched = gate<TurnExecution>()
++  const acknowledged = gate<TurnExecution>()
++  const errors: unknown[] = []
++  ctx.on('agent/error', ({ error }) => { errors.push(error) })
++  const run = vi.fn<TurnExecutor['run']>(async (input) => {
++    input.assertDispatchable()
++    input.writeText('partial reply')
++    if (input.message.id === unknown.id) {
++      await dispatched.hold(input, input.signal)
++      input.signal.throwIfAborted()
++      throw new Error('expected local Stop after dispatch')
++    }
++    await acknowledged.hold(input, input.signal)
++    return { kind: 'cancelled' }
++  })
++  const afterCommit = vi.fn<NonNullable<TurnExecutor['afterCommit']>>(async () => {})
++  const release = vi.fn<NonNullable<TurnExecutor['release']>>(async () => {})
++  await mountExecutor(ctx, { authorize: () => true, run, afterCommit, release })
++
++  agent.followup(unknown)
++  await duringWork(agent, dispatched.entered)
++  agent.cancel({ kind: 'user' }, { keepInbox: true })
++  await agent.whenIdle()
++
++  const events = await storedEvents()
++  expect(turnEnds(events)).toMatchObject([{ turn: 1, reason: { kind: 'error', error: { code: 'TURN_OUTCOME_UNKNOWN' } } }])
++  expect(events.find(event => event.type === 'assistant/message')?.data).toMatchObject({
++    interrupted: true, message: { content: [{ type: 'text', text: 'partial reply' }] },
++  })
++  expect(errors).toEqual([expect.objectContaining({ code: 'TURN_OUTCOME_UNKNOWN' })])
++  expect(afterCommit).not.toHaveBeenCalled()
++  expect(release.mock.calls.map(([input]) => input.message.id)).toEqual([unknown.id])
++
++  agent.followup(cancelled)
++  await duringWork(agent, acknowledged.entered)
++  agent.cancel({ kind: 'user' }, { keepInbox: true })
++  await agent.whenIdle()
++  expect(run.mock.calls.map(([input]) => input.message.id)).toEqual([unknown.id, cancelled.id])
++  expect(release.mock.calls.map(([input]) => input.message.id)).toEqual([unknown.id, cancelled.id])
++  expect(afterCommit.mock.calls.map(([input, end]) => [input.message.id, end.data.reason]))
++    .toEqual([[cancelled.id, { kind: 'aborted', reason: { kind: 'user' } }]])
++  expect(adapter.requests).toEqual([])
++})
++
++it('honors Stop while the input is being flushed without dispatching or confirming a result', async () => {
++  const { ctx, agent, adapter, gate, storedEvents } = await harness()
++  const prompt = message('stop before dispatch')
++  const observed = observeEvents(ctx, agent)
++  const flushing = gate()
++  ctx.on('session/flush', (session) => {
++    if (session === agent.session && userIds(observed).includes(prompt.id) && observed.at(-1)?.type !== 'turn/end') {
++      return flushing.hold(undefined)
++    }
++  })
++  const run = vi.fn<TurnExecutor['run']>(async () => ({ kind: 'completed' }))
++  const afterCommit = vi.fn(async () => {})
++  await mountExecutor(ctx, { authorize: () => true, run, afterCommit })
++  agent.followup(prompt)
++  await duringWork(agent, flushing.entered)
++  agent.cancel({ kind: 'user' }, { keepInbox: true })
++  flushing.open()
++  await agent.whenIdle()
++
++  const events = await storedEvents()
++  expect(userIds(events)).toEqual([prompt.id])
++  expect(turnEnds(events)).toEqual([{ turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } }])
++  expect(run).not.toHaveBeenCalled()
++  expect(afterCommit).not.toHaveBeenCalled()
++  expect(adapter.requests).toEqual([])
++})
++
++it('rejects an in-memory Session even with a session/flush listener', async () => {
++  const { ctx, agent, adapter } = await harness({ persistent: false })
++  const observed = observeEvents(ctx, agent)
++  ctx.on('session/flush', () => {})
++  const run = vi.fn<TurnExecutor['run']>(async () => ({ kind: 'completed' }))
++  await mountExecutor(ctx, { authorize: () => true, run })
++
++  expect(() => agent.followup(message('no writer'))).toThrow(expect.objectContaining({ code: 'TURN_REQUIRES_PERSISTENCE' }))
++  expect(agent.inbox.nextTurn).toEqual([])
++  expect(observed).toEqual([])
++  expect(run).not.toHaveBeenCalled()
++  expect(adapter.requests).toEqual([])
++})
++
++it('aborts on provider fiber disposal and waits for release before removing the route', async () => {
++  const { ctx, agent, adapter, gate, storedEvents } = await harness()
++  ctx.llm.registerAdapter([SYNTHETIC.provider], adapter)
++  const running = gate<TurnExecution>()
++  const releasing = gate<TurnExecution>()
++  const order: string[] = []
++  const lateDispatch = vi.fn()
++  const deniedDispatch = vi.fn()
++  const run = vi.fn<TurnExecutor['run']>(async (input) => {
++    input.assertDispatchable()
++    await running.hold(input, input.signal)
++    try {
++      input.assertDispatchable()
++    } catch (error: unknown) {
++      deniedDispatch(error)
++      return { kind: 'cancelled' }
++    }
++    lateDispatch()
++    return { kind: 'cancelled' }
++  })
++  const owner = await mountExecutor(ctx, {
++    authorize: () => true,
++    run,
++    async release(input) {
++      order.push('release started')
++      await releasing.hold(input)
++      order.push('release finished')
++    },
++  })
++
++  agent.followup(message('unmount while running'))
++  const input = await duringWork(agent, running.entered)
++  const disposing = owner.dispose().then(() => { order.push('disposed') })
++  try {
++    const releaseInput = await duringWork(agent, releasing.entered)
++    expect(input.signal.aborted).toBe(true)
++    expect(releaseInput === input).toBe(true)
++    expect(deniedDispatch).toHaveBeenCalledTimes(1)
++    expect(lateDispatch).not.toHaveBeenCalled()
++    expect(turnEnds(await storedEvents())).toMatchObject([{ turn: 1, reason: { kind: 'aborted' } }])
++    expect(order).toEqual(['release started'])
++  } finally {
++    releasing.open()
++    await disposing
++  }
++  await agent.whenIdle()
++  expect(order).toEqual(['release started', 'release finished', 'disposed'])
++  expect(ctx.agents.get(agent.id) === agent).toBe(true)
++
++  expect(() => agent.followup(message('do not fall back'))).toThrow(expect.objectContaining({ code: 'TURN_EXECUTOR_UNAVAILABLE' }))
++  await agent.whenIdle()
++  expect(run).toHaveBeenCalledTimes(1)
++  expect(adapter.requests).toEqual([])
++  expect(turnEnds(await storedEvents())).toHaveLength(1)
++})
+diff --git a/packages/core/agent/src/index.ts b/packages/core/agent/src/index.ts
+index 374be30..638a7ce 100644
+--- a/packages/core/agent/src/index.ts
++++ b/packages/core/agent/src/index.ts
+@@ -301,6 +301,28 @@ export class AgentRegistry extends Service {
+     return this.turnBoundaryProjectionHandle.stateOf(session)
+   }
+ 
++  /**
++   * Read archive admission for this Session and its subagent lineage without opening any Session.
++   * @param agent - the Agent proposing work.
++   * @returns whether its own Session or a subagent ancestor is archived; false without a Workspace registry.
++   */
++  isSessionArchived(agent: Agent): boolean {
++    const workspace = this.ctx.get('workspaceRegistry')
++    if (workspace === undefined) return false
++    const archived = workspace.archivedSessionIds
++    let header = agent.session.header
++    const visited = new Set<SessionId>()
++    while (!visited.has(header.id)) {
++      if (archived.includes(header.id)) return true
++      visited.add(header.id)
++      if (header.origin !== 'subagent' || header.parentSession === undefined) return false
++      const parent = this.ctx.get('sessions')?.get(header.parentSession)
++      if (parent === undefined) return archived.includes(header.parentSession)
++      header = parent.header
++    }
++    return false
++  }
++
+   /**
+    * Read the Agent that initiated the inherited asynchronous driver chain.
+    * Use this optional form for logging, tracing, metrics, or host attribution
+diff --git a/packages/core/agent/src/model-selection.ts b/packages/core/agent/src/model-selection.ts
+index 81a3019..32f8a3e 100644
+--- a/packages/core/agent/src/model-selection.ts
++++ b/packages/core/agent/src/model-selection.ts
+@@ -94,12 +94,14 @@ export const modelSelectionProjectionDefinition: Required<ProjectionDefinition<'
+  * @param readState - driver-owned reader for this Session's selection projection.
+  * @param session - Session receiving durable model selections.
+  * @param options - live route fallback until a selection or request is recorded.
++ * @param admit - optional driver guard just before a new selection is appended.
+  */
+ export class AgentModel implements Model {
+   constructor(
+     private readonly readState: () => ModelSelectionProjectionState,
+     private readonly session: Session,
+     private readonly options: AgentOptions,
++    private readonly admit?: (selection: Readonly<ModelSelection>) => void,
+   ) {}
+ 
+   current(): Readonly<ModelSelection> | undefined {
+@@ -110,8 +112,10 @@ export class AgentModel implements Model {
+   }
+ 
+   select(selection: Readonly<ModelSelection>): void {
+-    if (sameModelSelection(this.recordedSelection(), selection)) return
+-    this.session.append('model/selection', toSelection(selection.provider, selection.model, selection.reasoningEffort))
++    const next = toSelection(selection.provider, selection.model, selection.reasoningEffort)
++    if (sameModelSelection(this.recordedSelection(), next)) return
++    this.admit?.(next)
++    this.session.append('model/selection', next)
+   }
+ 
+   private recordedSelection(): ModelSelection | null {
+diff --git a/packages/core/agent/src/runtime-types.ts b/packages/core/agent/src/runtime-types.ts
+index 7012dfd..ad4f220 100644
+--- a/packages/core/agent/src/runtime-types.ts
++++ b/packages/core/agent/src/runtime-types.ts
+@@ -260,6 +260,14 @@ declare module './types.ts' {
+    */
+     steer(message: UserMessage): void
+ 
++    /**
++     * Move a queued turn into steering when the driver supports that operation.
++     * A refusal leaves the exact queued occurrence unchanged.
++     * @param messageId - the pending next-turn message to move.
++     * @returns whether the driver admitted the move.
++     */
++    promoteQueued?(messageId: MessageId): boolean
++
+     /**
+    * Queue model-facing context for the next pre-step without waking the
+    * driver. A running driver claims it at the nearest later step boundary;

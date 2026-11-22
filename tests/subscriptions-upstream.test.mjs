@@ -8,19 +8,16 @@ import { Context, Service } from '@deepseek-ai/cordis';
 import { composeEntries, evaluatePluginCompatibility, getDshRuntimeVersion, loadOverlayPatches } from '@deepseek-ai/dsh-app-boot';
 import LlmRuntime from '@deepseek-ai/dsh-llm';
 
-test('DSH compatibility checks enforce a minimum version, with no upper bound or exemption', async () => {
+test('DSH compatibility honors the declared peers without an engines.dsh requirement', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(Object.hasOwn(manifest.engines, 'dsh'), false);
   assert.equal(evaluatePluginCompatibility(manifest), undefined, `runs on DSH ${getDshRuntimeVersion()}`);
-  const { engines: _engines, ...withPeerRequirements } = manifest;
   for (const version of ['0.2.2-rc.3', '0.2.2-rc.5', '0.2.2', '0.2.3-rc.1', '0.3.0-0', '0.3.0-rc.1', '0.3.0', '2.0.0']) {
     assert.equal(evaluatePluginCompatibility(manifest, {}, version), undefined, version);
-    assert.equal(evaluatePluginCompatibility(withPeerRequirements, {}, version), undefined, version);
   }
-  const minimum = '0.2.2-rc.2';
-  const rejection = evaluatePluginCompatibility(manifest, {}, minimum);
-  assert.equal(rejection?.requirements['engines.dsh'], manifest.engines.dsh, minimum);
-  assert.equal(rejection.exempted, false);
-  assert.deepEqual(evaluatePluginCompatibility(withPeerRequirements, {}, minimum)?.requirements,
+  const rejection = evaluatePluginCompatibility(manifest, {}, '0.2.2-rc.2');
+  assert.equal(rejection?.exempted, false);
+  assert.deepEqual(rejection.requirements,
     Object.fromEntries(Object.entries(manifest.peerDependencies).filter(([id]) => id.startsWith('@deepseek-ai/dsh-'))));
 });
 
@@ -33,13 +30,16 @@ test('installed Models settings exposes the subscription footer after its add-pr
   assert.ok(section.indexOf("renderSlot('settings.models.footer', {})") > add, 'subscription footer follows the native control');
 });
 
-test('installed DSH composes Enhanced alone or as a replacement for the earlier stock row', () => {
+test('installed DSH composes the renamed Enhanced bundle with the original row and preset IDs', async () => {
+  const { name } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   const patch = fileURLToPath(new URL('../cordis.patch.yml', import.meta.url));
   const enhanced = loadOverlayPatches('subscriptions-fixture', patch);
   const stock = [{ insert: [{ id: 'llm-subscriptions', name: 'dsh-plugin-subscriptions' }] }];
   const warnings = [];
   const alone = composeEntries([enhanced], warning => warnings.push(warning));
   assert.deepEqual(alone.map(({ id }) => id), ['llm-subscriptions-enhanced', 'preset-writing']);
+  assert.equal(alone[0].name, name, 'loader resolves the new package under the existing row ID');
+  assert.equal(alone[1].config.id, 'writing');
   assert.ok(warnings.every(warning => warning === 'patch: entry "llm-subscriptions" not found'));
   const replaced = composeEntries([stock, enhanced], warning => assert.fail(warning));
   assert.equal(replaced.find(row => row.id === 'llm-subscriptions').disabled, true);
@@ -112,8 +112,10 @@ test('bundled GPT keeps the original account, RPC and native LLM stream', async 
     if (base.state === 3) throw base._error;
     assert.equal(base.state, 2);
     const subscriptions = await import('../lib/index.js');
+    const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+    assert.equal(subscriptions.name, manifest.name);
     assert.deepEqual(subscriptions.Config['~standard'].validate({}).value.providers,
-      ['codex', 'claude', 'grok', 'copilot', 'antigravity']);
+      ['codex', 'claude', 'grok', 'copilot']);
     // The status RPC also checks versions for enabled providers; keep it from
     // invoking a local Claude CLI outside this fixture.
     plugin = ctx.plugin(subscriptions, {
@@ -151,6 +153,17 @@ test('bundled GPT keeps the original account, RPC and native LLM stream', async 
     assert.equal(JSON.parse(await readFile(auth, 'utf8')).codex.accounts[account].accessToken, 'fixture-renewed');
     assert.deepEqual((await rpc('usage', { provider, account })).windows, [{ kind: 'session', durationMs: 18000000, usedPercent: 12 }]);
     assert.deepEqual(calls, ['/oauth/token', '/backend-api/codex/responses', '/backend-api/wham/usage', '/backend-api/wham/rate-limit-reset-credits']);
+
+    await rpc('logout', { provider, account });
+    const signedOut = (await rpc('status', {})).providers[provider];
+    assert.deepEqual(signedOut.accounts, []);
+    assert.equal(signedOut.statusUnavailable, undefined);
+    // Distinguish an unreadable store from a successful logout. Only the
+    // synthetic file in the fixture home is touched.
+    await writeFile(auth, '{invalid fixture JSON');
+    const failed = (await rpc('status', {})).providers[provider];
+    assert.equal(failed.statusUnavailable, true);
+    assert.match(failed.detail, /not valid JSON/);
   } finally {
     await plugin?.dispose();
     await base?.dispose();

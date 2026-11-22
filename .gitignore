@@ -4,3 +4,4 @@ tmp/
 *.tgz
 .env
 .env.*
+/docs/handoff-to-dsh.md

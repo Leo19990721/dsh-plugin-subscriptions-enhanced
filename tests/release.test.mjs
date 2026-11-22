@@ -3,19 +3,19 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 const root = new URL('../', import.meta.url);
 
-test('public release keeps the existing subscription identity and uses its own repository metadata', async () => {
+test('the renamed bundle retains the existing repository and dependency metadata', async () => {
   const pkg = JSON.parse(await readFile(new URL('package.json', root), 'utf8'));
-  assert.equal(pkg.name, 'dsh-plugin-subscriptions-enhanced');
-  assert.equal(pkg.engines.dsh, '>=0.2.2-rc.3');
+  assert.equal(pkg.name, 'dsh-subscriptions-enhanced');
+  assert.deepEqual(pkg.engines, { node: '>=24.0.0' });
   for (const [id, range] of Object.entries(pkg.peerDependencies)) {
-    if (id.startsWith('@deepseek-ai/dsh-')) assert.equal(range, pkg.engines.dsh, id);
+    if (id.startsWith('@deepseek-ai/dsh-')) assert.equal(range, '>=0.2.2-rc.3', id);
   }
   assert.match(pkg.repository.url, /github\.com\/Leo19990721\/dsh-plugin-subscriptions-enhanced/);
   assert.ok(pkg.files.includes('NOTICE'));
   assert.deepEqual(pkg.dependencies, { undici: '7.30.2' });
   assert.equal(pkg.devDependencies['dsh-plugin-subscriptions'], '0.9.13');
   assert.deepEqual(Object.keys(pkg.exports), ['.', './client', './locale/*.json', './icon', './package.json']);
-  for (const file of ['README.md', 'scripts/pack.ps1', 'tests/gemini-prompt.test.mjs']) assert.doesNotMatch(await readFile(new URL(file, root), 'utf8'), /[CE]:[\\/](?:Users|Personal|AI)/);
+  for (const file of ['README.md', 'scripts/pack.ps1', 'scripts/smoke-agy-windows.mjs']) assert.doesNotMatch(await readFile(new URL(file, root), 'utf8'), /[CE]:[\\/](?:Users|Personal|AI)/);
 });
 
 test('release preserves the upstream copyright and explains its fixed-version patch maintenance', async () => {
@@ -41,7 +41,10 @@ test('packed subscription release has no private host data or local source map p
     assert.doesNotMatch(body.toString(), /[CE]:[\\/](?:Users|Personal|AI)|01a1d0eb-00b2/);
     at += 512 + Math.ceil(size / 512) * 512;
   }
-  const runtime = ['client.js', 'gemini-prompt.js', 'index.js', 'policy.js', 'upstream.json', 'writing-host.js', 'writing-policy.js'];
+  const runtime = ['client.js', 'index.js', 'upstream.json', 'writing-host.js', 'writing-policy.js',
+    'agy-local-plugin.js', 'agy-local-host.js', 'agy-local-runtime.js', 'agy-local-context.js', 'agy-local-progress.js',
+    'agy-local-proxy.js', 'agy-local-mcp.js', 'agy-local-gpt-bridge.js', 'agy-ingress.js', 'agy-identity.js',
+    'agy-launch.js', 'agy-acp-client.js', 'agy-session.js', 'agy-turn-session.js', 'agy-turn-options.js'];
   const expected = [...runtime.map(file => `lib/${file}`), 'package.json', 'NOTICE', 'LICENSE', 'LICENSE-DSH',
     'README.md', 'cordis.patch.yml', 'icon.svg', 'locale/en.json', 'locale/zh.json'];
   assert.deepEqual([...files.keys()].sort(), expected.map(file => `package/${file}`).sort());

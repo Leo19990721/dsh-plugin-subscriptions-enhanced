@@ -1,49 +1,48 @@
 # Subscriptions Enhanced
 
-基于 [V1ki/dsh-plugin-subscriptions 0.9.13](https://github.com/V1ki/dsh-plugin-subscriptions) 的 MIT 增强版，保留原账户、模型设置、额度和网络实现。
+基于 [V1ki/dsh-plugin-subscriptions 0.9.13](https://github.com/V1ki/dsh-plugin-subscriptions) 的 MIT 增强版。
+
+## 在 DSH 用本机 Gemini 干活
+
+`0.3.0` 移除了 `engines.dsh`，保留对 DSH 接口包的 peer 依赖。已验证的环境为 Windows DSH Desktop `0.2.2-rc.5` 和 Google 官方 Antigravity CLI `1.5.12`（x64）。在原来的聊天模型菜单或 `/model` 里选 **Google Antigravity → Gemini**，不用换预设或另开会话。仍只走[官方 `agy acp`](https://antigravity.google/docs/ide/extensions/acp/)，没有旧私有直连备用通道。
+
+- **工作目录和工具**：使用当前会话的实际工作目录，包含 DSH 已提交的目录变更。DSH「完全权限／无需审批」时，`agy` 按本机权限读写文件、跑命令、联网；完全权限但要求审批时，ACP 的确认请求交给 DSH。受限模式不会放开终端和 MCP（`agy` 的终端沙箱不等同于 DSH 沙箱）。只读模式不写文件；工作区写入模式下，工作区内的 `agy` 编辑由 DSH 审批。
+- **进度和附件**：实时思考片段、工具名、运行状态及可用的短结果都能在原生「思考」折叠项里看；工具只由 `agy` 执行一次。拖入图片会发送图像；普通附件按 DSH 的实际存储路径交给 `agy` 按需读取，粘贴文件路径也可以。去掉旧版 64 KiB 文本门槛，仍受 DSH 附件限制、ACP 单帧 16 MiB 上限及模型上下文限制。
+- **续聊**：官方会话状态和对应关系保存在当前 DSH profile 的 `plugin-data/subscriptions-enhanced/agy` 下（无 profile 时在 DSH home）。重启优先恢复同一个官方会话。如果无法恢复该会话或工作目录变更，就带一段近期已完成的对话正文新开。第一次从其他模型切入 Gemini，或切走聊一段再回来，也会带上更新的正文；不搬历史图片、工具输出、思考或其他模型的系统提示词。
+- **本机规则和 MCP**：默认读 DSH home 下的 `AGENTS.md`，复制给该会话独立的 `agy` HOME 作为 `~/.gemini/GEMINI.md`；工作区规则由 `agy` 原生加载。完全权限下，已在当前 DSH 会话注册且可用的 Knowledge、Windows、Playwright 工具会通过本机 MCP 转接，沿用其原有会话范围和工具权限。不另起浏览器、不复制 MCP 凭据；DSH 里没启用或没连上的服务不会凭空出现。
+
+插件默认从 `%LOCALAPPDATA%\agy\bin\agy.exe` 找 CLI；用[官方 CLI](https://antigravity.google/docs/getting-started?tab=cli)登录，不需要 Google API Key。登录之后回到 **设置 → 模型 → Google Antigravity 接入状态**，点「重新检查」。Gemini 新消息从本机 DSH 聊天框提交，不开放远程或无人值守调用。
+
+已连接时，在 **设置 → 模型 → Google Antigravity → 管理** 点 **查看额度**，可直接查看剩余百分比、本地时间的重置点和 G1 Credits 余额。插件只在点击「查看额度」或「刷新额度」时通过官方 `agy --print` 查询，不弹终端、不后台轮询。
+
+可以在插件的 `google` 配置里覆盖 `executable`、`dataDir` 和 `agentsFile`（为空则不加载全局规则）。`proxy` 默认 `auto`：先看代理环境变量，再走 Windows 当前用户的系统代理；可填明确的代理地址，填 `direct` 或空字符串则直连。`mcp` 可按名单选 `knowledge`、`windows`、`playwright`；`[]` 则不转接。
+
+用 DSH 插件管理器添加本机 `.tgz`。同名包可以直接更新；如果还装着旧包名 `dsh-plugin-subscriptions-enhanced`，先把新包安装为未启用，卸载旧名的第三方「订阅增强」，再启用新包。旧名和新名不能同时启用。
 
 ## 订阅账号
 
-打开 **设置 → 模型**，在「添加模型提供商」下方的「订阅账号」找到 **Codex (ChatGPT)** 和 **Gemini (Google Antigravity)**。未登录可点「登录」开始浏览器授权；已登录可点「管理」看账号和额度，或进入账号和模型设置。Claude、Grok、GitHub Copilot 在同页的「其他订阅」里，代理和额度显示在「订阅选项」里。侧栏不再单列「订阅」。
+打开 **设置 → 模型**，在「添加模型提供商」下方找到「订阅账号」。已连接的服务直接显示，点「管理」可以看账号和额度。要连接新服务，打开「添加订阅账号」，选择 Codex、Claude、Grok 或 GitHub Copilot，再点「登录」。最后一个账号退出后，服务回到「添加订阅账号」。代理和额度显示保留在「订阅选项」里。
 
-增强包使用 DSH 的模型页扩展位，沿用原订阅插件的登录、账号存储、模型 ID、额度查询和请求实现。同一个 DSH 主目录下已有登录和对话不需要迁移；登录后在原生对话选择器中使用可用模型。无需另外安装市场版订阅插件、Codex CLI 或填写 API Key。
+增强包沿用这些订阅的账号存储、模型 ID、额度查询和请求实现。同一个 DSH 主目录下的账号无需迁移，不需要单独安装 Codex CLI 或填写 API Key。模型、思考强度、普通会话和子代理保持 DSH 原生路径。既有账户池保留原归属；升级只移除退役服务的成员，旧 Antigravity 所属的池停用。额度面板沿用当前 DSH 的定位和点外关闭行为。
 
 ## 安装已发布版本
 
-要求 **DSH `0.2.2-rc.3` 或更新版本**，安装不设 DSH 版本上限。已在 `0.2.2-rc.3` 和 `0.2.2-rc.5` 上通过本机回归。安装包名保持 `dsh-plugin-subscriptions-enhanced`。
+本节用于已发布的稳定版本。`0.3.0` 不声明 `engines.dsh`；安装器仍会检查 DSH 接口包的 peer 依赖。`0.2.9` 起包名为 `dsh-subscriptions-enhanced`。从本仓库 [Releases](https://github.com/Leo19990721/dsh-plugin-subscriptions-enhanced/releases) 下载正式 `.tgz`，在 DSH 原生插件管理器填写安装包绝对路径或下载 URL。
 
-从本仓库 [Releases](https://github.com/Leo19990721/dsh-plugin-subscriptions-enhanced/releases) 下载经过发布的 `.tgz`，在 DSH 原生插件管理器填写安装包绝对路径或下载 URL。升级继续使用本机原有订阅登录，不迁移或分发账户数据。新建会话和已有会话均使用原生界面，模式、模型、思考强度选择框保持原样。
+从旧名 `dsh-plugin-subscriptions-enhanced` 换装时，先保留旧安装包。装好新版后，关闭安装完成页，先别点「立即启用」。等正在使用订阅模型的任务结束，在「插件」页卸载旧名的**订阅增强**，再启用新包。到「设置 → 模型」核对原有账号。启用失败可关闭新包后重新安装旧包。旧名和新名是两个第三方插件包，不要同时启用。
 
-同名新版本通过插件管理器安装；如果返回“需要重启”，结束正在执行的任务后再由用户重启 DSH。单独安装增强包即可。如果原版已经安装，增强包排在原版后面会停用原版的 `llm-subscriptions` 插件行；若重新启用了原版，先在插件管理器关闭原版组合包，避免两个提供方重复注册。升级前保留上一版安装包。
+同名新版本可直接通过插件管理器更新。若提示重启，先结束正在执行的任务。对于先加载的第三方上游 `dsh-plugin-subscriptions`，增强包按原插件名称临时覆盖 `llm-subscriptions` 行；停用或卸载增强包会撤掉这层覆盖。DSH 自带的选模、输入框、队列和停止组件不受影响。
 
 ## 写作模式
 
-- 在原生新建会话界面选择「写作模式」，后台自动配对可用的 Gemini；还没发第一条消息时选择 Gemini，也自动切到「写作模式」，保留所选的具体模型。
-- 空白会话从写作模式选择 GPT 等非 Gemini 模型时，自动回到默认的非写作模式，保留点选的具体模型和思考强度；如果默认模式本身是写作模式，则回到可用的标准模式。
-- 会话开始后模式固定，写作模式只接受 Gemini；其他模式只接受非 Gemini。不匹配的选择通过原生错误提示拒绝，当前模型和默认设置不变。
-- 写作模式复用本版 DSH 极简模式的图像读取、终端和自动历史压缩能力，只把开头身份替换为用户确认的这句：你是一名中文写作助手，帮助用户起草、修改和整理文字材料。
-- 标准、PTC、极简、创造模式在使用 Codex 等其他模型时继续可选。
-- 已经开始的对话不更换模式，沿用 DSH 原生规则；增强不增加底栏控件、命令或新会话弹窗。
-- 模型按钮和 `/model` 均使用 DSH 原生处理路径。有效选择保留原生默认保存行为；被拒绝的选择不保存默认。后台自动配对不写默认。
-- Gemini 按 `gemini-`、`antigravity-gemini-` 及独立账号模型 ID 识别，符合命名的新型号自动适用。
+普通模式可自由选择 Gemini 或 GPT，换模型不会自动切换预设。写作模式是基于 DSH 极简配置的快捷预设，只使用 Gemini。
 
-原生菜单仍展示 DSH 完整模型目录，不按会话重绘菜单；后台在保存选择前执行类别校验。回归测试会核对所用 DSH 版本的 Cordis/Session 写入前事件、原生选择命令和极简模式配置。原生添加提供商和模型选择控件保持不变。关闭插件不会重写已有会话；曾使用写作模式的会话需要该预设仍然安装。
-
-## 其他增强
-
-- 临时网络、服务器、超时和空响应最多重试两次；保留上游明确要求的等待时间。
-- Antigravity 429 不推测五分钟冷却；明确等待时间仍限定到对应账号和模型。
-- Gemini 请求只移除固定的 Harness 身份开场句，并将创造模式的一句应用身份改为中性表述；用户正文保留。
-- 额度面板兼容当前 DSH 的定位和点外关闭行为。其他订阅逻辑保持固定上游实现。
-
-安装包不包含账户、密钥、登录缓存或聊天记录。HTTP 429、账号限制和模型额度仍按服务商返回值处理。
+- 空白会话切到写作模式时，优先使用可用的本机 Google Antigravity 模型；没有时回退到其他已配置的 Gemini。当前会话已明确选择的可用 Gemini 会保留。
+- 使用官方 `agy` 写作时，会在本机规则后附上中文写作助手人设。退出写作模式后，新开的官方会话不会继承这个人设；DSH 保留原有记录。开始对话后的预设切换仍遵守 DSH 原生规则。
+- 自动配对只影响当前空白会话，不写全局默认。
 
 ## 开发
 
-Node.js 24、pnpm。执行 `pnpm install --ignore-scripts`、`pnpm build`、`pnpm test`。构建固定上游版本并核对 Host/Client SHA-256；更新上游必须重新核对补丁和极简模式配置。
+Node.js 24、pnpm。执行 `pnpm install --ignore-scripts`、`pnpm build`、`pnpm test`。构建固定上游并核对 Host/Client SHA-256。Desktop 集成测试使用已安装的 Electron Node 模式读取 ASAR；合成测试不需要真实账号或模型连接。
 
-在 DSH 环境测试会使用已安装的官方服务和预设，测试中的会话和模型均为合成数据，不读当前登录凭据，不请求真实模型。Desktop 使用 Electron Node 模式读取 ASAR。`DSH_TEST_STANDARD_PROMPT` 是可选私有样本，不随仓库分发。
-
-Windows 执行 `pwsh -NoProfile -File scripts/pack.ps1` 自动构建、测试、检查并打包；`-NodePath`、`-PnpmPath` 可指定已有受管运行时。产物位于 `.local-install`，包括版本包和 SHA-256。GitHub 发布沿用常规标签和 Release，不建设同步服务。
-
-原作者版权和修改说明见 [LICENSE](./LICENSE)、[NOTICE](./NOTICE)。
+Windows 执行 `pwsh -NoProfile -File scripts/pack.ps1` 自动构建、测试和打包。`-NodePath`、`-PnpmPath` 可指定已安装的运行时。产物在 `.local-install`。安装包不包含 CLI 可执行文件、密钥、登录缓存或聊天记录。原作者版权及修改见 [LICENSE](./LICENSE) 和 [NOTICE](./NOTICE)。

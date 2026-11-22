@@ -17,9 +17,9 @@ const context = vm.createContext({ failUsage() {}, publishUsage() {}, retainUsag
 vm.runInContext(browser.slice(start, end) + '\nthis.callAuth = callSubscriptionsAuth;', context);
 
 for (const [method, payload, value] of [
-  ['status', {}, { providers: { antigravity: { accounts: [{ key: 'synthetic-account' }] } } }],
-  ['usage', { provider: 'antigravity', account: 'synthetic-account' }, { remaining: 72 }],
-  ['providerSettings', { provider: 'antigravity' }, { provider: 'antigravity', modelPreferences: [] }],
+  ['status', {}, { providers: { codex: { accounts: [{ key: 'synthetic-account' }] } } }],
+  ['usage', { provider: 'codex', account: 'synthetic-account' }, { remaining: 72 }],
+  ['providerSettings', { provider: 'codex' }, { provider: 'codex', modelPreferences: [] }],
 ]) {
   test(`subscription ${method} keeps its original API route with Remote enabled`, { skip: !remoteRoot && 'Remote plugin not installed', timeout: 5000 }, async () => {
     const { installSessionCarrier } = await import(pathToFileURL(join(remoteRoot, 'client-carrier.js')).href);

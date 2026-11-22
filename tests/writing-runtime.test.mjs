@@ -32,7 +32,7 @@ test('native Session acceptance rejects category before append and remains usabl
   const ctx = new Context();
   const agents = new Map();
   let writing, session, agent;
-  const gemini = { provider: 'antigravity', model: 'gemini-fixture' };
+  const gemini = { provider: 'fixture-gemini-provider', model: 'gemini-fixture' };
   const codex = { provider: 'codex', model: 'gpt-fixture' };
   const base = ctx.plugin({ apply(scope) {
     new SessionStore(scope);
@@ -63,7 +63,7 @@ test('native Session acceptance rejects category before append and remains usabl
 
 // Exercise the installed native command unchanged. Its non-exported command
 // class is exposed only in this test's in-memory module, never in the Host.
-test('native command keeps started modes fixed and pairs blank model choices in both directions', async () => {
+async function nativeSelectFixture(t, localGoogle) {
   let native = await readFile(join(process.env.DSH_INSTALL_DIR, '../dsh-api-session-controller/lib/index.js'), 'utf8');
   const nativeRequire = createRequire(join(process.env.DSH_INSTALL_DIR, '../dsh-api-session-controller/package.json'));
   native = native.replace('from "mime-types"', `from ${JSON.stringify(pathToFileURL(nativeRequire.resolve('mime-types')).href)}`);
@@ -71,15 +71,17 @@ test('native command keeps started modes fixed and pairs blank model choices in 
   const { SessionCommandController } = await import(`data:text/javascript;base64,${Buffer.from(native).toString('base64')}`);
   const ctx = new Context();
   const agents = new Map();
-  let writing;
   const codex = { provider: 'codex', model: 'gpt-fixture' };
-  const gemini = { provider: 'antigravity', model: 'gemini-fixture' };
+  const gemini = { provider: 'fixture-gemini-provider', model: 'gemini-fixture' };
+  const localGemini = { provider: 'antigravity', model: 'gemini-local-fixture' };
+  const models = localGoogle ? [codex, gemini, localGemini] : [codex, gemini];
+  let deploymentDefault = codex;
   let saved = 0;
   let blank = false;
   let preset = 'standard';
   const llm = {
-    listProviders: () => [{ id: 'codex' }, { id: 'antigravity' }],
-    listModels: async id => [{ id: id === 'codex' ? codex.model : gemini.model }],
+    listProviders: () => models.map(({ provider }) => ({ id: provider })),
+    listModels: async id => models.filter(({ provider }) => provider === id).map(({ model }) => ({ id: model })),
     resolveModelInfo: async () => ({}), resolveCallConfig: async selection => selection,
   };
   const base = ctx.plugin({ apply(scope) {
@@ -91,15 +93,20 @@ test('native command keeps started modes fixed and pairs blank model choices in 
         preset = mode;
         agent.session.append('agent-preset/selected', { agentPreset: mode });
         scope.emit('agent-preset/selected', agent.id, mode);
-      } }, llm, sessionController: {},
-      agentDefaultModel: { saveSelection: async () => { saved++; } },
+      } }, llm, sessionController: { async modelCatalog() {
+        return { default: deploymentDefault, groups: models.map(({ provider, model }) => ({ id: provider, models: [{ id: model }] })) };
+      } },
+      agentDefaultModel: { saveSelection: async selection => { saved++; deploymentDefault = selection; } },
     })) Object.assign(new Service(scope, key, true), value);
   } });
-  try {
-    await base.inertia;
-    const session = ctx.sessions.create('native-select-fixture', { meta: { cwd: process.cwd() } });
-    const agent = { id: session.id, session, ctx, status: 'idle', maintaining: false,
-      model: new AgentModel(() => ({ lastUsed: codex, pending: session.snapshotEvents().findLast(event => event.type === 'model/selection')?.data ?? null }), session, {}),
+  t.after(() => base.dispose());
+  await base.inertia;
+  function makeAgent(id) {
+    const session = ctx.sessions.create(id, { meta: { cwd: process.cwd() } });
+    const agent = { id, session, ctx, status: 'idle', maintaining: false,
+      model: new AgentModel(() => ({ lastUsed: null, pending: session.snapshotEvents().findLast(event => event.type === 'model/selection')?.data ?? null }), session, {
+        get provider() { return deploymentDefault.provider; }, get model() { return deploymentDefault.model; },
+      }),
       runMaintenance(job) {
         if (this.maintaining) throw new Error('active work');
         this.maintaining = true;
@@ -109,37 +116,78 @@ test('native command keeps started modes fixed and pairs blank model choices in 
         return this.maintenanceDone;
       },
     };
-    agents.set(agent.id, agent);
-    writing = ctx.plugin({ inject: ['agents', 'agentPresets', 'llm', 'sessionController'], apply });
-    await writing.inertia;
-    const commands = new SessionCommandController(ctx, { resolveAgent: async () => ({ agent }), serializeImageAdmission: async (_agent, job) => job() }, process.cwd());
-    const before = session.seq;
-    await assert.rejects(commands.selectModel({ sessionId: agent.id, ...gemini }), error => error.code === 'session/model-unavailable' && /非 Gemini/.test(error.message));
-    assert.equal(session.seq, before);
-    assert.equal(saved, 0);
-    assert.deepEqual(await commands.selectModel({ sessionId: agent.id, ...codex, reasoningEffort: 'high' }), { selected: { ...codex, reasoningEffort: 'high' } });
-    assert.equal(session.seq, before + 1);
-    assert.equal(saved, 1, 'valid native choice keeps normal default persistence');
-    blank = true;
-    const beforeBlank = session.seq;
-    assert.deepEqual(await commands.selectModel({ sessionId: agent.id, ...gemini }), { selected: gemini });
-    await agent.maintenanceDone;
-    assert.equal(preset, 'writing');
-    assert.deepEqual(agent.model.current(), gemini);
-    assert.deepEqual(session.snapshotEvents().slice(beforeBlank).map(event => event.type), ['model/selection', 'agent-preset/selected']);
-    assert.equal(saved, 2, 'blank choice keeps the native successful default save');
-    const beforeReverse = session.snapshotEvents().length;
-    const selectedGpt = { ...codex, reasoningEffort: 'high' };
-    assert.deepEqual(await commands.selectModel({ sessionId: agent.id, ...selectedGpt }), { selected: selectedGpt });
-    await agent.maintenanceDone;
-    assert.equal(preset, 'ptc', 'reverse follows the configured default mode');
-    assert.deepEqual(agent.model.current(), selectedGpt, 'do not substitute the clicked model or effort');
-    assert.deepEqual(session.snapshotEvents().slice(beforeReverse).map(event => event.type), ['model/selection', 'agent-preset/selected']);
-    assert.equal(saved, 3, 'reverse choice keeps the normal native save');
-    blank = false;
-    const beforeStarted = session.seq;
-    await assert.rejects(commands.selectModel({ sessionId: agent.id, ...gemini }), error => error.code === 'session/model-unavailable');
-    assert.equal(session.seq, beforeStarted);
-    assert.equal(saved, 3);
-  } finally { await writing?.dispose(); await base.dispose(); }
+    agents.set(id, agent);
+    return agent;
+  }
+  const agent = makeAgent('native-select-fixture');
+  const writing = ctx.plugin({ inject: ['agents', 'agentPresets', 'llm', 'sessionController'], apply }, { localGoogle });
+  t.after(() => writing.dispose());
+  await writing.inertia;
+  const commands = new SessionCommandController(ctx, { resolveAgent: async id => ({ agent: agents.get(id) }), serializeImageAdmission: async (_agent, job) => job() }, process.cwd());
+  return { ctx, agent, makeAgent, codex, gemini, localGemini, commands, get saved() { return saved; }, get preset() { return preset; },
+    set blank(value) { blank = value; } };
+}
+
+test('native command keeps started modes fixed and pairs blank model choices in both directions', async t => {
+  const f = await nativeSelectFixture(t, false);
+  const { agent, codex, gemini, commands } = f;
+  const { session } = agent;
+  const before = session.seq;
+  await assert.rejects(commands.selectModel({ sessionId: agent.id, ...gemini }), error => error.code === 'session/model-unavailable' && /非 Gemini/.test(error.message));
+  assert.equal(session.seq, before);
+  assert.equal(f.saved, 0);
+  assert.deepEqual(await commands.selectModel({ sessionId: agent.id, ...codex, reasoningEffort: 'high' }), { selected: { ...codex, reasoningEffort: 'high' } });
+  assert.equal(session.seq, before + 1);
+  assert.equal(f.saved, 1, 'valid native choice keeps normal default persistence');
+  f.blank = true;
+  const beforeBlank = session.seq;
+  assert.deepEqual(await commands.selectModel({ sessionId: agent.id, ...gemini }), { selected: gemini });
+  await agent.maintenanceDone;
+  assert.equal(f.preset, 'writing');
+  assert.deepEqual(agent.model.current(), gemini);
+  assert.deepEqual(session.snapshotEvents().slice(beforeBlank).map(event => event.type), ['model/selection', 'agent-preset/selected']);
+  assert.equal(f.saved, 2, 'blank choice keeps the native successful default save');
+  const beforeReverse = session.snapshotEvents().length;
+  const selectedGpt = { ...codex, reasoningEffort: 'high' };
+  assert.deepEqual(await commands.selectModel({ sessionId: agent.id, ...selectedGpt }), { selected: selectedGpt });
+  await agent.maintenanceDone;
+  assert.equal(f.preset, 'ptc', 'reverse follows the configured default mode');
+  assert.deepEqual(agent.model.current(), selectedGpt, 'do not substitute the clicked model or effort');
+  assert.deepEqual(session.snapshotEvents().slice(beforeReverse).map(event => event.type), ['model/selection', 'agent-preset/selected']);
+  assert.equal(f.saved, 3, 'reverse choice keeps the normal native save');
+  f.blank = false;
+  const beforeStarted = session.seq;
+  await assert.rejects(commands.selectModel({ sessionId: agent.id, ...gemini }), error => error.code === 'session/model-unavailable');
+  assert.equal(session.seq, beforeStarted);
+  assert.equal(f.saved, 3);
+});
+
+test('production native commands leave ordinary modes fixed and guard writing at the append boundary', async t => {
+  const f = await nativeSelectFixture(t, true);
+  const { ctx, agent, commands, codex, gemini, localGemini } = f;
+  const select = (target, selection) => commands.selectModel({ sessionId: target.id, ...selection });
+  for (const model of [localGemini, codex, gemini]) {
+    assert.deepEqual(await select(agent, model), { selected: model });
+    assert.equal(f.preset, 'standard');
+  }
+  assert.equal(f.saved, 3);
+  assert.ok(agent.session.snapshotEvents().every(event => event.type === 'model/selection'));
+
+  f.blank = true;
+  const writer = f.makeAgent('native-writing-fixture');
+  assert.deepEqual(writer.model.current(), gemini, 'the blank session inherits the ordinary model default');
+  await ctx.agentPresets.select(writer, 'writing');
+  await writer.maintenanceDone;
+  assert.deepEqual(writer.model.current(), localGemini);
+  assert.equal(f.saved, 3, 'automatic writing pick never changes the deployment default');
+  const beforeRejection = writer.session.seq;
+  await assert.rejects(select(writer, codex), error => error.code === 'session/model-unavailable' && /只能选择 Gemini/.test(error.message));
+  assert.equal(writer.session.seq, beforeRejection);
+  assert.equal(f.saved, 3, 'a rejected choice never saves a model default');
+  const manual = { ...gemini, reasoningEffort: 'high' };
+  assert.deepEqual(await select(writer, manual), { selected: manual });
+  assert.deepEqual(writer.model.current(), manual);
+  assert.equal(f.preset, 'writing');
+  assert.equal(f.saved, 4);
+  assert.deepEqual(writer.session.snapshotEvents().map(event => event.type), ['agent-preset/selected', 'model/selection', 'model/selection']);
 });

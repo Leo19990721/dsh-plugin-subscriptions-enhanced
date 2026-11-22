@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Subscriptions Enhanced",
-    "description": "在「设置 → 模型」中登录和管理 Codex（ChatGPT）、Gemini 等订阅，保留原账号、额度查询和模型请求实现。新建和已有会话均使用DSH原生界面，不替换模式、模型或思考强度选择框。空白新会话选择Gemini自动切到写作模式，选择写作模式自动配对Gemini；空白写作会话选择其他模型，自动回到默认非写作模式，保留点选模型。已有会话模式固定：写作模式仅接受Gemini，其他模式仅接受非Gemini，不匹配选择使用原生错误提示。写作身份为中文写作助手，能力沿用极简配置。Antigravity临时错误最多短重试两次，遵守明确等待时间。"
+    "description": "在原来的聊天里选 Gemini，用本机官方 Antigravity CLI 处理工作区文件、图片和附件，重启后还能接着聊。原有订阅账号设置保留。"
   }
 }
