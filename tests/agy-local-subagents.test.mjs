@@ -203,9 +203,9 @@ test('the local desktop carrier can start Gemini and a completed native child wa
   assert.equal(input.length, 2);
   assert.match(input[1], /finished while the parent was idle/);
   assert.equal(end(h, id).kind, 'completed');
-  ok(await h.localCarrierPost('session', 'prompt', request('process peer is not the desktop'), 'owner'));
+  ok(await h.localCarrierPost('session', 'prompt', request('remote authenticated owner message'), 'owner'));
   await h.idle(id);
-  assert.equal(input.length, 2, 'a non-browser owner does not obtain an ACP capability');
+  assert.equal(input.length, 3, 'an authenticated owner remote/carrier message can reach Gemini');
   await h.cleanup();
 });
 
@@ -271,27 +271,36 @@ test('native ordinary parent can spawn, message, and resume a Gemini child', { t
   await h.cleanup();
 });
 
-test('native local Google refuses automation, a granted nonowner, and an owner without browser ingress', { timeout: 12_000 }, async t => {
+test('native local Google refuses automation and a granted nonowner while allowing authenticated owner remote prompts', { timeout: 12_000 }, async t => {
   const apis = {};
-  const h = await fixture(t, { nativeSubagents: {}, apis, acpPrompt() { assert.fail('unauthorized input reached ACP'); } });
+  const accepted = [];
+  const h = await fixture(t, {
+    nativeSubagents: {}, apis,
+    acpPrompt(turn) {
+      accepted.push(contentText(turn.params.prompt));
+      turn.update('ok');
+      turn.reply();
+    },
+  });
   const id = await h.create();
   ok(await h.select(id, GOOGLE));
   apis.guestSessionId = id;
-  const guest = randomUUID(), api = randomUUID(), direct = randomUUID();
+  const guest = randomUUID(), remoteOwner = randomUUID();
   const request = (requestId, value) => ({ request: { sessionId: id, mode: 'queue', requestId, content: [text(value)] } });
   await h.invoke('session', 'prompt', request(guest, 'guest via valid per-session grant'), 'guest');
   await h.idle(id);
   assert.deepEqual(users(h.events(id)).at(-1)?.source, { kind: 'user', rpcId: guest, principal: { kind: 'fixture-guest' } });
-  ok(await h.prompt(id, 'process-token HTTP owner is not an interactive browser', { requestId: api, who: 'owner' }));
-  await h.idle(id);
-  assert.deepEqual(users(h.events(id)).at(-1)?.source, { kind: 'user', rpcId: api });
-  await h.invoke('session', 'prompt', request(direct, 'owner with in-process access but no HTTP witness'), 'browser');
-  await h.idle(id);
-  assert.deepEqual(users(h.events(id)).at(-1)?.source, { kind: 'user', rpcId: direct });
+  assert.equal(accepted.length, 0);
   // Native schedule dispatch calls agent.followup(createUserMessage(...)) with this exact attribution.
   h.agent(id).followup(createUserMessage({ content: [text('synthetic schedule')], source: { kind: 'schedule' } }));
   await h.settled(id);
   assert.deepEqual(users(h.events(id)).at(-1)?.source, { kind: 'schedule' });
-  assert.equal(prompts(h).length, 0);
+  assert.equal(accepted.length, 0);
   assert.deepEqual(h.started, []);
+  // Authenticated owner via Remote / DSH Go reaches Gemini normally.
+  await h.invoke('session', 'prompt', request(remoteOwner, 'owner from remote DSH Go'), 'browser');
+  await h.idle(id);
+  assert.equal(accepted.length, 1);
+  assert.match(accepted[0], /owner from remote DSH Go/);
+  await h.cleanup();
 });

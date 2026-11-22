@@ -265,6 +265,10 @@ export class AgySession {
       const status = TOOL_STATUSES.has(update.status) ? update.status : previous?.status ?? 'pending';
       if (title) this.#tools.set(id, { title, status });
       turn.onTool?.(update);
+    } else if (update.sessionUpdate === 'usage_update') {
+      const used = Number.isSafeInteger(update.used) && update.used >= 0 ? update.used : undefined;
+      const size = Number.isSafeInteger(update.size) && update.size > 0 ? update.size : undefined;
+      if (used !== undefined || size !== undefined) turn.onUsage?.({ ...(used !== undefined ? { used } : {}), ...(size !== undefined ? { size } : {}) });
     }
   }
 
@@ -284,14 +288,14 @@ export class AgySession {
     turn.cancelTimer.unref?.();
   }
 
-  async runTurn(input, { signal, onDelta, onThought, onTool }) {
+  async runTurn(input, { signal, onDelta, onThought, onTool, onUsage }) {
     if (signal.aborted) return stopped();
     const prompt = typeof input === 'string' ? [{ type: 'text', text: input }] : input;
     if (!this.usable || this.#turn || !Array.isArray(prompt) || !prompt.some(block =>
       block?.type === 'text' ? typeof block.text === 'string' && block.text.trim() : block?.type === 'image' || block?.type === 'resource_link' || block?.type === 'resource')) {
       throw new AgySessionError('turn-unavailable');
     }
-    const turn = { onDelta, onThought, onTool, bytes: 0, cancelled: false, done: Promise.withResolvers() };
+    const turn = { onDelta, onThought, onTool, onUsage, bytes: 0, cancelled: false, done: Promise.withResolvers() };
     this.#tools.clear();
     this.#turn = turn;
     const cancel = () => this.#cancel(turn);

@@ -214,12 +214,36 @@ export function agyProgress() {
   };
 }
 
-export function agyUsage(usage) {
-  const number = key => Number.isSafeInteger(usage?.[key]) && usage[key] >= 0 ? usage[key] : undefined;
-  const inputTokens = number('inputTokens'), outputTokens = number('outputTokens');
-  if (inputTokens === undefined || outputTokens === undefined) return;
-  const read = number('cachedReadTokens'), write = number('cachedWriteTokens'), total = number('totalTokens');
-  // ACP input/output include the observed thought cost; keep it separate only when Google totals reconcile.
-  return { inputTokens, outputTokens, ...(read ? { cacheReadTokens: read } : {}), ...(write ? { cacheWriteTokens: write } : {}),
-    ...(total !== undefined && total >= inputTokens + outputTokens ? { totalTokens: total } : {}) };
+export function agyUsage(usage, contextUsage) {
+  const number = (source, key) => Number.isSafeInteger(source?.[key]) && source[key] >= 0 ? source[key] : undefined;
+  const rawInput = number(usage, 'inputTokens'), outputTokens = number(usage, 'outputTokens');
+  const liveUsed = number(contextUsage, 'used');
+  if (rawInput === undefined && liveUsed === undefined) return;
+  const read = number(usage, 'cachedReadTokens') ?? 0;
+  const write = number(usage, 'cachedWriteTokens') ?? 0;
+  const out = outputTokens ?? 0;
+  // DSH computes prompt pressure as inputTokens + cacheReadTokens + cacheWriteTokens.
+  // ACP inputTokens already includes cachedReadTokens (and sums across tool loops).
+  const uncachedRaw = rawInput !== undefined ? (read <= rawInput ? rawInput - read : rawInput) : 0;
+  const totalPromptRaw = uncachedRaw + read + write;
+  let inputTokens = uncachedRaw;
+  let cacheReadTokens = read;
+  let cacheWriteTokens = write;
+  if (liveUsed !== undefined) {
+    if (totalPromptRaw > 0 && liveUsed < totalPromptRaw) {
+      const ratio = liveUsed / totalPromptRaw;
+      cacheReadTokens = Math.min(liveUsed, Math.round(read * ratio));
+      cacheWriteTokens = Math.min(liveUsed - cacheReadTokens, Math.round(write * ratio));
+      inputTokens = Math.max(0, liveUsed - cacheReadTokens - cacheWriteTokens);
+    } else if (totalPromptRaw === 0) {
+      inputTokens = liveUsed;
+    }
+  }
+  const totalTokens = inputTokens + cacheReadTokens + cacheWriteTokens + out;
+  return {
+    inputTokens, outputTokens: out,
+    ...(cacheReadTokens ? { cacheReadTokens } : {}),
+    ...(cacheWriteTokens ? { cacheWriteTokens } : {}),
+    ...(totalTokens >= inputTokens + out ? { totalTokens } : {}),
+  };
 }

@@ -238,8 +238,12 @@ export function createAgyTurnSession({ cwd, makeClient, timeLimits, mcpServers, 
       turn.onDispatch = onDispatch;
       turn.signal = signal;
       try {
-        const result = await session.runTurn(input, { signal, onDelta, onThought, onTool });
-        return { status: result.status, stopReason: turn.stopReason, ...(turn.usage ? { usage: turn.usage } : {}) };
+        const result = await session.runTurn(input, { signal, onDelta, onThought, onTool, onUsage: value => { turn.contextUsage = { ...turn.contextUsage, ...value }; } });
+        return {
+          status: result.status, stopReason: turn.stopReason,
+          ...(turn.usage ? { usage: turn.usage } : {}),
+          ...(turn.contextUsage ? { contextUsage: turn.contextUsage } : {}),
+        };
       } catch (error) {
         poison();
         throw error;

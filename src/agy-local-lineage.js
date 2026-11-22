@@ -44,7 +44,7 @@ export function installAgyLineage(ctx, isLocalSubmission) {
     });
   }
   ctx.on('agent/inbox/inserted', ({ agent, message }) => {
-    if (!isLocalSubmission() || !isOwner(message.source)) return;
+    if (!isOwner(message.source)) return;
     const ids = ownerInput.get(agent) ?? new Set();
     ids.add(message.id);
     ownerInput.set(agent, ids);

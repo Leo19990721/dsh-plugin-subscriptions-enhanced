@@ -1,5 +1,11 @@
 # Subscriptions Enhanced
 
+## 0.4.3
+
+- 允许经 DSH 认证的本人远程提交（手机 DSH Go / 跨电脑 Remote）正常与本机 Gemini 对话，不再误报 `AGY_CHAT_ONLY`，同时继续拦截定时任务与非 owner 来源。
+- 支持纯 Gemini 会话通过只读无工具隔离会话执行 `/compact` 摘要压缩与自动生成会话标题。
+- 修复底栏上下文占用长期显示 100%：按 DSH 非重叠 token 语义扣减重复叠加的 `cachedReadTokens`、优先采用 ACP `usage_update` 真实窗口占用，并将 Gemini 窗口容量更新为 1M。
+
 ## 0.4.2
 
 - 恢复在选中 Google Antigravity 时隐藏原生「智能体团队协作」菜单项，切回其他模型时自动恢复。
