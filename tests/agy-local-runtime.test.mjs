@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { agyProxyEnv } from '../src/agy-local-proxy.js';
 import { localHistory, localPrompt, prepareLocalHistory } from '../src/agy-local-context.js';
-import { inventoryAgyWorkspace, isAgyReadOnlyRefPath, matchesAgyReadOnlyRef, syncAgySkills, withinAgyWritableRoots } from '../src/agy-local-storage.js';
+import { agentsSkillsPath, inventoryAgyWorkspace, isAgyReadOnlyRefPath, matchesAgyReadOnlyRef, syncAgySkills, withinAgyWritableRoots } from '../src/agy-local-storage.js';
 import { agyProgress } from '../src/agy-local-progress.js';
 import { createLocalAgy } from '../src/agy-local-runtime.js';
 import { installAgyLineage } from '../src/agy-local-lineage.js';
@@ -860,4 +860,113 @@ test('syncAgySkills follows official agy migration junction to sibling .gemini/c
   await rm(join(settingsDir, 'skills'), { recursive: true, force: true });
   await symlink(outside, join(settingsDir, 'skills'), 'junction');
   await assert.rejects(syncAgySkills(inv2, settingsDir, signal), /Unsafe Antigravity skills directory/);
+});
+
+test('inventoryAgyWorkspace discovers all DSH skill roots in exact precedence order and handles user/ grouping safely', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-agy-skill-roots-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const userHome = join(root, 'user-home');
+  const dshHome = join(root, 'dsh-home');
+  const cwd = join(root, 'project');
+  const userAgents = join(userHome, '.agents', 'skills');
+  const userDsh = join(dshHome, 'skills');
+  const userDshGrouped = join(userDsh, 'user');
+  const projectAgents = join(cwd, '.agents', 'skills');
+  const projectDsh = join(cwd, '.dsh', 'skills');
+
+  const put = async (base, name, body) => {
+    const dir = join(base, name);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'SKILL.md'), body);
+  };
+  await put(userAgents, 'only-user-agents', 'from ~/.agents/skills');
+  await put(userAgents, 'shared', 'tier-1-user-agents');
+  await put(userDshGrouped, 'only-grouped', 'from ~/.dsh/skills/user');
+  await put(userDshGrouped, 'shared', 'tier-2-user-grouped');
+  await put(userDshGrouped, 'grouped-vs-direct', 'tier-2-grouped');
+  await put(userDsh, 'grouped-vs-direct', 'tier-3-direct-dsh');
+  await put(projectAgents, 'only-project-agents', 'from <cwd>/.agents/skills');
+  await put(projectAgents, 'shared', 'tier-4-project-agents');
+  await put(projectAgents, 'project-override', 'tier-4-project-agents');
+  await put(projectDsh, 'project-override', 'tier-5-project-dsh');
+
+  // Verify agentsSkillsPath isolation and env precedence
+  assert.equal(agentsSkillsPath({ DSH_HOME: dshHome }), undefined);
+  assert.equal(agentsSkillsPath({ USERPROFILE: userHome }), userAgents);
+  assert.equal(agentsSkillsPath({ DSH_AGENTS_HOME: join(root, 'custom-agents'), USERPROFILE: userHome }), join(root, 'custom-agents', 'skills'));
+
+  const spawns = [];
+  const runtime = createLocalAgy({ dataDir: join(root, 'data') }, {
+    parentEnv: { DSH_HOME: dshHome, USERPROFILE: userHome, SystemRoot: process.env.SystemRoot ?? root },
+    verify: () => join(root, 'agy.exe'),
+    resolveProxy: () => ({}),
+    makeTransport(options) {
+      spawns.push(options);
+      return {
+        start: async () => ({}),
+        close: async () => {},
+        async request() {
+          return {
+            sessionId: randomUUID(),
+            configOptions: [{
+              type: 'select', name: 'Model', id: 'model', category: 'model',
+              currentValue: 'gemini-4-neon', options: [{ value: 'gemini-4-neon', name: 'Gemini 4 Neon' }],
+            }],
+          };
+        },
+      };
+    },
+  });
+  t.after(() => runtime.dispose());
+
+  const session = await runtime.open(signal, { id: 'all-roots', cwd, mode: 'full' });
+  const mirrored = (...parts) => join(spawns[0].env.HOME, '.gemini', 'antigravity-cli', 'skills', ...parts);
+  assert.equal(await readFile(mirrored('only-user-agents', 'SKILL.md'), 'utf8'), 'from ~/.agents/skills');
+  assert.equal(await readFile(mirrored('only-grouped', 'SKILL.md'), 'utf8'), 'from ~/.dsh/skills/user');
+  assert.equal(await readFile(mirrored('grouped-vs-direct', 'SKILL.md'), 'utf8'), 'tier-3-direct-dsh');
+  assert.equal(await readFile(mirrored('only-project-agents', 'SKILL.md'), 'utf8'), 'from <cwd>/.agents/skills');
+  assert.equal(await readFile(mirrored('shared', 'SKILL.md'), 'utf8'), 'tier-4-project-agents');
+  assert.equal(await readFile(mirrored('project-override', 'SKILL.md'), 'utf8'), 'tier-5-project-dsh');
+  await session.close();
+
+  // Edge case: a genuine skill literally named "user" (having ~/.dsh/skills/user/SKILL.md)
+  // must be discovered as "user" and NOT produce a bogus flat skill named "SKILL".
+  const literalSkills = join(root, 'literal-skills');
+  await put(literalSkills, 'user', 'skill literally named user');
+  const invLiteral = await inventoryAgyWorkspace({ globalSkills: literalSkills, signal });
+  assert.deepEqual(invLiteral.skills.map(s => s.name), ['user']);
+});
+
+test('skill-sync-failed preserves underlying cause and logs diagnostic warning via logger', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-agy-skill-diag-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dataDir = join(root, 'data'), cwd = join(root, 'work'), outside = join(root, 'outside');
+  await Promise.all([cwd, outside].map(dir => mkdir(dir, { recursive: true })));
+  const warnings = [];
+  const runtime = createLocalAgy({ dataDir }, {
+    parentEnv: { DSH_HOME: join(root, 'dsh-home'), SystemRoot: process.env.SystemRoot ?? root },
+    verify: () => join(root, 'agy.exe'),
+    resolveProxy: () => ({}),
+    logger: { warn: message => warnings.push(message) },
+    makeTransport() { assert.fail('should fail before launching ACP'); },
+  });
+  t.after(() => runtime.dispose());
+
+  // Pre-seed an external junction at .gemini/antigravity-cli/skills for session id 'broken-sync'
+  const { createHash } = await import('node:crypto');
+  const key = createHash('sha256').update('broken-sync').digest('hex');
+  const settingsDir = join(dataDir, key, 'home', '.gemini', 'antigravity-cli');
+  await mkdir(settingsDir, { recursive: true });
+  await symlink(outside, join(settingsDir, 'skills'), 'junction');
+
+  await assert.rejects(
+    runtime.open(signal, { id: 'broken-sync', cwd, mode: 'full' }),
+    error => {
+      assert.equal(error.code, 'skill-sync-failed');
+      assert.match(error.cause?.message ?? '', /Unsafe Antigravity skills directory/);
+      return true;
+    },
+  );
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /Unsafe Antigravity skills directory/);
 });

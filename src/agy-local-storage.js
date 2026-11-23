@@ -7,10 +7,26 @@ import { pipeline } from 'node:stream/promises';
 import { isLocalAgyPath, sameAgyPath } from './agy-launch.js';
 
 const absent = error => error?.code === 'ENOENT';
+const skippableFsError = error => ['ENOENT', 'ENOTDIR', 'ELOOP', 'EPERM', 'EACCES', 'EBUSY', 'UNKNOWN'].includes(error?.code);
 const mirrorMarker = '.dsh-skill-mirror';
+const expandTilde = value => value.replace(/^~(?=$|[\\/])/u, () => homedir());
+const envValue = (parent, key) => {
+  if (!parent) return undefined;
+  const found = Object.keys(parent).find(name => name.toUpperCase() === key);
+  return found === undefined ? undefined : parent[found]?.trim() || undefined;
+};
 export function dshHomePath(parent, ...parts) {
-  const home = parent.DSH_HOME?.trim() ? parent.DSH_HOME : join(homedir(), '.dsh');
-  return resolve(home.replace(/^~(?=$|[\\/])/u, () => homedir()), ...parts);
+  const home = envValue(parent, 'DSH_HOME') ?? join(homedir(), '.dsh');
+  return resolve(expandTilde(home), ...parts);
+}
+export function agentsSkillsPath(parent) {
+  const explicit = envValue(parent, 'DSH_AGENTS_HOME');
+  if (explicit) return resolve(expandTilde(explicit), 'skills');
+  const userHome = envValue(parent, 'USERPROFILE') ?? envValue(parent, 'HOME');
+  if (userHome) return resolve(expandTilde(userHome), '.agents', 'skills');
+  // When parentEnv is stripped to only DSH_HOME (e.g. isolated tests), avoid leaking host ~/.agents/skills.
+  if (envValue(parent, 'DSH_HOME')) return undefined;
+  return resolve(homedir(), '.agents', 'skills');
 }
 
 // realpath equality also rejects a junction or symlink in an ancestor, not just at the leaf.
@@ -20,12 +36,18 @@ async function ordinaryEntry(path, type) {
     const entry = await lstat(path, { bigint: true });
     if ((type === 'dir' ? entry.isDirectory() : entry.isFile()) && sameAgyPath(path, await realpath(path))) return entry;
   } catch (error) {
-    if (!absent(error) && !['ENOTDIR', 'ELOOP'].includes(error?.code)) throw error;
+    if (!skippableFsError(error)) throw error;
   }
 }
 const ordinary = async (path, type) => Boolean(await ordinaryEntry(path, type));
 const compareNames = (a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
-const entriesOf = async path => (await readdir(path, { withFileTypes: true })).sort(compareNames);
+const entriesOf = async path => {
+  try { return (await readdir(path, { withFileTypes: true })).sort(compareNames); }
+  catch (error) {
+    if (skippableFsError(error)) return [];
+    throw error;
+  }
+};
 const stamp = stat => [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
 
 async function fileEntry(path) {
@@ -79,26 +101,38 @@ async function skillTree(root, signal) {
 }
 
 /** Inventory only the configured rules, direct cwd rules and effective DSH skills. Never read their bodies here. */
-export async function inventoryAgyWorkspace({ cwd, agentsFile, globalSkills, signal }) {
+export async function inventoryAgyWorkspace({ cwd, agentsFile, globalSkills, agentsSkills, signal }) {
   signal?.throwIfAborted();
   const ordinaryCwd = cwd && await ordinary(cwd, 'dir');
   const localRules = ordinaryCwd ? join(cwd, 'AGENTS.md') : undefined;
+  const localAgents = ordinaryCwd ? join(cwd, '.agents') : undefined;
+  const localAgentsSkills = localAgents && await ordinary(localAgents, 'dir') ? join(localAgents, 'skills') : undefined;
   const localDsh = ordinaryCwd ? join(cwd, '.dsh') : undefined;
   const localSkills = localDsh && await ordinary(localDsh, 'dir') ? join(localDsh, 'skills') : undefined;
+  const globalUserCandidate = globalSkills ? join(globalSkills, 'user') : undefined;
+  const globalUserSkills = globalUserCandidate && await ordinary(globalUserCandidate, 'dir')
+    && !await ordinary(join(globalUserCandidate, 'SKILL.md'), 'file') ? globalUserCandidate : undefined;
   const globalRules = agentsFile ? resolve(agentsFile) : undefined;
-  const [global, workspace, globalRule, workspaceRule] = await Promise.all([
-    skillCandidates(globalSkills, signal), skillCandidates(localSkills, signal),
+  const [userAgents, userGrouped, global, workspaceAgents, workspace, globalRule, workspaceRule] = await Promise.all([
+    skillCandidates(agentsSkills, signal),
+    skillCandidates(globalUserSkills, signal),
+    skillCandidates(globalSkills, signal),
+    skillCandidates(localAgentsSkills, signal),
+    skillCandidates(localSkills, signal),
     globalRules && fileEntry(globalRules),
     localRules && (!globalRules || !sameAgyPath(globalRules, localRules)) && fileEntry(localRules),
   ]);
-  for (const [key, skill] of workspace) global.set(key, skill);
+  const merged = new Map();
+  for (const source of [userAgents, userGrouped, global, workspaceAgents, workspace]) {
+    for (const [key, skill] of source) merged.set(key, skill);
+  }
   const rules = [[globalRule, 'Global'], [workspaceRule, 'Workspace']]
     .flatMap(([file, scope]) => file ? [{ ...file, scope }] : []);
   const hash = createHash('sha256');
   const record = value => hash.update(JSON.stringify(value) + '\n');
   for (const file of rules) record(['rules', file]);
   const skills = [];
-  for (const skill of [...global.values()].sort(compareNames)) {
+  for (const skill of [...merged.values()].sort(compareNames)) {
     signal?.throwIfAborted();
     const entries = skill.tree ? await skillTree(skill.path, signal) : [{ name: 'SKILL.md', file: skill.file }];
     // If a definition was removed during inventory, fail rather than mirror a partial skill.
