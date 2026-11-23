@@ -14,9 +14,9 @@ export function exactKeys(value, keys) {
 }
 
 // Desktop forwards authenticated dsh-app requests without Sec-Fetch-Site.
-export function isAgyBrowserRequest(ctx, req, exactPeer = false) {
+export function isAgyBrowserRequest(ctx, req, exactPeer = false, presentationOnly = false) {
   if (!AGY_LOOPBACK.test(ctx.webServer.host ?? '') || !AGY_LOOPBACK.test(req.socket?.remoteAddress ?? '')
-    || ctx.connection.allowsRemoteAuthorities !== false
+    || (!presentationOnly && ctx.connection.allowsRemoteAuthorities !== false)
     || ![undefined, 'same-origin', 'none'].includes(req.headers?.['sec-fetch-site'])) return false;
   const { peer } = ctx.connection.admit(req);
   return Boolean(peer?.id && !peer.signal.aborted && peer.principal.kind === 'owner'
@@ -39,8 +39,10 @@ export function installAgyWitness(ctx, { nativeActions = false, exactPeer = true
   }
   const disposeHttp = ctx.on('connection/request', (req, _res, next) => {
     const action = req.method === 'POST' ? paths.get(req.url) : undefined;
-    if (action === undefined || !isAgyBrowserRequest(ctx, req, exactPeer)) return next();
-    return run(action, next);
+    if (action === undefined) return next();
+    if (isAgyBrowserRequest(ctx, req, exactPeer)) return run(action, next);
+    if (action === 'bridge' && isAgyBrowserRequest(ctx, req, exactPeer, true)) return run('presentation', next);
+    return next();
   });
   const disposeLocal = nativeActions && localCarrier ? ctx.on('session-hosts/local-call', ({ request, peer, endpoint, signal }, next) => {
     const action = paths.get(`/api/${endpoint}`);

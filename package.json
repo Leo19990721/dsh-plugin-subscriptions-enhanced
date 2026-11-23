@@ -1,6 +1,6 @@
 {
   "name": "dsh-subscriptions-enhanced",
-  "version": "0.4.10",
+  "version": "0.4.11",
   "private": true,
   "type": "module",
   "description": "Manage DSH subscriptions and work with Gemini through the local official Antigravity CLI.",
@@ -40,7 +40,8 @@
     "@deepseek-ai/dsh-home-paths": "*",
     "@deepseek-ai/dsh-attachment": "*",
     "@deepseek-ai/dsh-web": "*",
-    "@deepseek-ai/dsh-tools": "*"
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-session": "*"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": { "optional": true },
@@ -49,6 +50,7 @@
     "@deepseek-ai/dsh-home-paths": { "optional": true },
     "@deepseek-ai/dsh-attachment": { "optional": true },
     "@deepseek-ai/dsh-web": { "optional": true },
-    "@deepseek-ai/dsh-tools": { "optional": true }
+    "@deepseek-ai/dsh-tools": { "optional": true },
+    "@deepseek-ai/dsh-session": { "optional": true }
   }
 }

@@ -763,6 +763,24 @@ test('non-catalog sessions block AGY built-in async subagent tools via PreToolUs
   await aux2.close();
   await assert.rejects(lstat(join(homeAux1, '..')), { code: 'ENOENT' });
   await assert.rejects(lstat(join(homeAux2, '..')), { code: 'ENOENT' });
+
+  const mcpServers = [{ type: 'http', name: 'dsh', url: 'http://127.0.0.1:12345/mcp', headers: [] }];
+  const bridged = await runtime.open(signal, { id: 'chat-sub', cwd, mode: 'full', mcpServers, nativeQuestions: true, nativeSchedules: true });
+  const questionHook = JSON.parse(await readFile(join(cfg1, 'hooks.json'), 'utf8'))['dsh-native-questions-only'].PreToolUse[0];
+  const intercept = new RegExp(questionHook.matcher);
+  assert.ok(intercept.test('ask_question'));
+  for (const name of ['ask_user_question', 'mcp_dsh_ask_user_question', 'ask_question_again']) assert.ok(!intercept.test(name));
+  const denyQuestion = JSON.parse(await readFile(join(cfg1, 'dsh-deny-ask-question.json'), 'utf8'));
+  assert.equal(denyQuestion.decision, 'deny');
+  assert.match(denyQuestion.reason, /mcp_dsh_ask_user_question/);
+  const instructions = await readFile(join(spawns.at(-1).env.HOME, '.gemini', 'GEMINI.md'), 'utf8');
+  assert.match(instructions, /mcp_dsh_ask_user_question.*multi_select/);
+  assert.match(instructions, /explicit request/);
+  await bridged.close();
+  const unbridged = await runtime.open(signal, { id: 'chat-sub', cwd, mode: 'full', nativeQuestions: true });
+  assert.equal(JSON.parse(await readFile(join(cfg1, 'hooks.json'), 'utf8'))['dsh-native-questions-only'], undefined);
+  assert.doesNotMatch(await readFile(join(spawns.at(-1).env.HOME, '.gemini', 'GEMINI.md'), 'utf8'), /mcp_dsh_ask_user_question/);
+  await unbridged.close();
 });
 
 test('installAgyLineage authorizes resumed pre-existing subagents and their callbacks after restart', async () => {

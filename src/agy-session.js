@@ -2,12 +2,13 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { AgyAcpErrorCode } from './agy-acp-client.js';
 import { isLocalAgyPath } from './agy-launch.js';
+import { AGY_MAX_TOOL_CALLS, AGY_TOOL_BYTES, AGY_TOOL_UPDATES, agyToolSize, summarizeAgyTool } from './agy-local-tool-data.js';
 
 const SESSION_LIMIT = 512;
 const MAX_TURN_BYTES = 4 * 1024 * 1024;
 const MAX_HISTORY_BYTES = 2 * 1024 * 1024;
 const MAX_HISTORY_MESSAGES = 600;
-const MAX_TOOLS = 200;
+const MAX_TOOLS = AGY_MAX_TOOL_CALLS;
 const MAX_PERMISSIONS = 6;
 const CANCELLED = Object.freeze({ outcome: Object.freeze({ outcome: 'cancelled' }) });
 const STOP_REASONS = new Set(['end_turn', 'cancelled', 'max_tokens', 'max_turn_requests', 'refusal']);
@@ -269,8 +270,14 @@ export class AgySession {
       if (!previous && this.#tools.size >= MAX_TOOLS) return;
       const title = cleanLabel(update.title, 300) || previous?.title;
       const status = TOOL_STATUSES.has(update.status) ? update.status : previous?.status ?? 'pending';
-      if (title) this.#tools.set(id, { title, status });
-      turn.onTool?.(update);
+      this.#tools.set(id, { title: title || 'Antigravity', status });
+      if (turn.onTool && turn.toolUpdates < AGY_TOOL_UPDATES && turn.toolBytes < AGY_TOOL_BYTES) {
+        const preview = summarizeAgyTool(update);
+        if (preview && (turn.toolBytes += agyToolSize(preview)) <= AGY_TOOL_BYTES) {
+          turn.toolUpdates++;
+          turn.onTool({ ...preview, sessionUpdate: update.sessionUpdate });
+        }
+      }
     } else if (update.sessionUpdate === 'usage_update') {
       const used = Number.isSafeInteger(update.used) && update.used >= 0 ? update.used : undefined;
       const size = Number.isSafeInteger(update.size) && update.size > 0 ? update.size : undefined;
@@ -301,7 +308,7 @@ export class AgySession {
       block?.type === 'text' ? typeof block.text === 'string' && block.text.trim() : block?.type === 'image' || block?.type === 'resource_link' || block?.type === 'resource')) {
       throw new AgySessionError('turn-unavailable');
     }
-    const turn = { onDelta, onThought, onTool, onUsage, bytes: 0, cancelled: false, done: Promise.withResolvers() };
+    const turn = { onDelta, onThought, onTool, onUsage, bytes: 0, toolBytes: 0, toolUpdates: 0, cancelled: false, done: Promise.withResolvers() };
     this.#tools.clear();
     this.#turn = turn;
     const cancel = () => this.#cancel(turn);

@@ -1,4 +1,4 @@
-import { isAgySessionId } from './agy-session.js';
+import { summarizeAgyTool } from './agy-local-tool-data.js';
 
 const cancelled = Object.freeze({ outcome: Object.freeze({ outcome: 'cancelled' }) });
 const ended = status => ['completed', 'failed', 'cancelled'].includes(status);
@@ -9,9 +9,11 @@ export function backgroundEvent(update) {
         return { kind: update.sessionUpdate === 'agent_message_chunk' ? 'text' : 'thought', value: update.content.text };
       }
       break;
-    case 'tool_call': case 'tool_call_update':
-      if (isAgySessionId(update.toolCallId)) return { kind: 'tool', value: update };
+    case 'tool_call': case 'tool_call_update': {
+      const value = summarizeAgyTool(update);
+      if (value) return { kind: 'tool', summarized: true, value: { ...value, sessionUpdate: update.sessionUpdate } };
       break;
+    }
     case 'usage_update': {
       const { used, size } = update;
       const value = { ...(Number.isSafeInteger(used) && used >= 0 ? { used } : {}), ...(Number.isSafeInteger(size) && size > 0 ? { size } : {}) };

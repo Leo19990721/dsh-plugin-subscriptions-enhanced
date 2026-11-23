@@ -122,7 +122,7 @@ export async function createTurnHost(t, {
   root, acpPrompt, beforeFlush, afterLedgerWrite, toolStep, ordinaryPrompt, withUploads = false, apis = {}, releasedReader = false,
   mountSubscription, acpConfig: initialAcpConfig = mountSubscription ? subscriptionConfig : baseConfig, desktopRequests = false, withCompaction = false,
   withRetry = false, withCheckpoint = false, withWorkingDirectory = false, localPermissions, localAttachments = false, localMcpMarker,
-  nativeSubagents, ordinaryStream,
+  nativeSubagents, ordinaryStream, mountTools,
 } = {}) {
   if (releasedReader && withUploads) throw new Error('Use the unmodified reader without fixture upload injection');
   if (mountSubscription && !releasedReader) throw new Error('Mount the ordinary subscription adapter with the unmodified runtime');
@@ -405,6 +405,7 @@ export async function createTurnHost(t, {
       const writing = await scope.agentPresets.register({ id: 'writing', plugins: [] });
       scope.effect(() => writing);
     } });
+    if (mountTools) await mountTools({ mount, ctx, cwd });
     await mount(native.AgentLoop, { agents: [], maxParallelToolCalls: 1 });
     await mount(native.SessionController, { nativeOpen: false });
     await mount(workspaceController.WorkspaceController);

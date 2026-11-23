@@ -14,6 +14,10 @@ test('Remote bridge only exposes tools in the current session tool set', () => {
     assert.equal(current, agent);
     assert.equal(resolved, toolSet);
     return available;
+  }, executable(name, current, resolved) {
+    assert.equal(current, agent);
+    assert.equal(resolved, toolSet);
+    return available.find(tool => tool.name === name && !tool.disabled);
   } } };
   assert.equal(agyMcpTools(ctx, agent, toolSet, ['remote']).size, 0);
   const custom = { name: 'mcp__my-server__read' };
