@@ -25,7 +25,7 @@ test('built browser contributes a Models footer and scopes teamwork to its nativ
   assert.match(source, /registerEnhancedModelsSettings\(ctx, connection, t, SubscriptionsSection, quotaState\);/);
   const patch = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8');
   assert.doesNotMatch(patch, /id: ui-model-selection|id: ui-agent-preset|id: ui-settings-models/);
-  assert.doesNotMatch(source, /settings\.section|settings\.models\.provider-card|@deepseek-ai\/dsh-client-ui-|document\.(?:querySelector|head\.appendChild)|conversation\.hero\.agentPreset/);
+  assert.doesNotMatch(source, /settings\.section|settings\.models\.provider-card|@deepseek-ai\/dsh-client-ui-(?!primitives\b)|document\.(?:querySelector|head\.appendChild)|conversation\.hero\.agentPreset/);
   assert.match(source, /ctx\.inject\(\["modelDirectories"\], \(scope\) => registerAgyTeamMenu\(scope, react\.createElement\)\)/);
   assert.deepEqual(source.match(/conversation\.input\.model[.\w]*/g), ['conversation.input.model.options']);
   assert.match(source, /id: "subscription-usage",/);

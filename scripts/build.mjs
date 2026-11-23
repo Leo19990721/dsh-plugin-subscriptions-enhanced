@@ -45,7 +45,7 @@ host = host.replaceAll('Settings → Subscriptions', 'Settings → Models')
   .replaceAll('Settings > Subscriptions', 'Settings > Models').replaceAll('设置 → 订阅', '设置 → 模型');
 client = retireAntigravityClient(patchCodexUltrafastClient(patchModelsSettings(client, replaceOnce), replaceOnce));
 client = replaceOnce(client, 'registerEnhancedModelsSettings(ctx, connection, t, SubscriptionsSection);',
-  'const quotaState = installAgyClient(ctx);\n\tconst agyT = ctx.locale.bind(agySection);\n\tregisterAgyToolCards(ctx, react);\n\tctx.inject(["modelDirectories"], (scope) => registerAgyTeamMenu(scope, react.createElement));\n\tregisterEnhancedModelsSettings(ctx, connection, t, SubscriptionsSection, quotaState);');
+  'const quotaState = installAgyClient(ctx);\n\tconst agyT = ctx.locale.bind(agySection);\n\tregisterAgyToolCards(ctx, react, loadAgyPrimitives(require));\n\tctx.inject(["modelDirectories"], (scope) => registerAgyTeamMenu(scope, react.createElement));\n\tregisterEnhancedModelsSettings(ctx, connection, t, SubscriptionsSection, quotaState);');
 client = replaceOnce(client, `			currentModel: createCurrentModelReader(models, sessionId)
 		})
 	}, SubscriptionUsageBadge));`, `			currentModel: createCurrentModelReader(models, sessionId),

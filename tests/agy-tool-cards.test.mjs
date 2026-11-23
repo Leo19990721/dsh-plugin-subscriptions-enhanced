@@ -66,20 +66,81 @@ test('card folds on stable start identity, renders literal strings and shows unc
   const context = { id: 'x', key: 'stable', start: { event, location: { kind: 'step', step: { end: { time: 45 } }, turn: {} } }, current: new Map(), state };
   const node = d.buildViewNode(context);
   assert.equal(node.data.interrupted, true);
-  const rendered = createAgyToolCard(tree)({ node });
+  const rendered = createAgyToolCard(tree)({ node, useDisclosure: () => ({ expanded: true, toggle() {} }) });
   const serialized = JSON.stringify(rendered);
-  assert.equal(rendered.tag, 'details');
+  assert.equal(rendered.tag, 'div');
   assert.equal(rendered.props['data-agy-tool-status'], 'interrupted');
   assert.match(serialized, /Unconfirmed/);
   assert.match(serialized, /25 ms/);
-  assert.match(serialized, /<script>no<\/script>/);
-  assert.doesNotMatch(serialized, /dangerouslySetInnerHTML|"tag":"script"/);
+  assert.match(serialized, /echo hello/);
+  assert.doesNotMatch(serialized, /dangerouslySetInnerHTML|"tag":"script"|"tag":"details"/);
   const complete = row('x', { ...event.data, status: 'completed', settledAt: 40 }, 4);
   const updated = d.buildViewNode({ ...context, state: d.update(context, { event: complete }) });
   assert.equal(updated.key, node.key);
   assert.equal(updated.anchorSeq, 3);
   assert.equal(updated.data.interrupted, false);
   assert.equal(updated.data.state.status, 'completed');
+});
+
+test('card uses native DSH DisclosureRow/TerminalBlock primitives and formats MCP/file titles cleanly', () => {
+  const calls = [];
+  const DisclosureRow = props => ({ kind: 'DisclosureRow', props });
+  const TextShimmer = props => ({ kind: 'TextShimmer', props });
+  const TerminalBlock = props => ({ kind: 'TerminalBlock', props });
+  const IconBrowseOutlineRegular = props => ({ icon: 'Browse', props });
+  const IconApiOutlineRegular = props => ({ icon: 'Api', props });
+  const IconSparkleRegular = props => ({ icon: 'Sparkle', props });
+  const primitives = { DisclosureRow, TextShimmer, TerminalBlock, IconBrowseOutlineRegular, IconApiOutlineRegular, IconSparkleRegular };
+  const Card = createAgyToolCard(tree, primitives);
+
+  // 1. MCP Playwright tool cleans noisy "Run mcp_dsh_mcp__playwright__" prefix
+  const mcpRendered = Card({
+    node: { data: { interrupted: false, state: {
+      id: '1', category: 'mcp', status: 'completed', startedAt: 10, settledAt: 1810,
+      title: 'Run mcp_dsh_mcp__playwright__browser_network_requests', target: '', paths: [], diffs: [], output: '',
+    } } },
+  });
+  const mcpRow = mcpRendered.children[0];
+  assert.equal(mcpRow.tag, DisclosureRow);
+  assert.equal(mcpRow.props.title, 'Browser');
+  assert.equal(mcpRow.props.running, false);
+  const mcpSummary = JSON.stringify(mcpRow.props.collapsedContent);
+  assert.match(mcpSummary, /browser_network_requests/);
+  assert.doesNotMatch(mcpSummary, /Run mcp_dsh|1\.8 s|Completed/);
+
+  // 2. File read normalizes "/C:/..." prefix, shortens path, and wires clickable openFile
+  const fileRendered = Card({
+    node: { data: { interrupted: false, state: {
+      id: '2', category: 'read', status: 'completed', startedAt: 10, settledAt: 58,
+      title: 'File /C:/Users/admin/.dsh/artifacts/playwright/page-2026-11-23.yml', target: '', paths: [], diffs: [], output: '',
+    } } },
+    openFile: file => calls.push(file),
+  });
+  const fileRow = fileRendered.children[0];
+  assert.equal(fileRow.props.title, 'Read');
+  const fileJson = JSON.stringify(fileRow.props.collapsedContent);
+  assert.match(fileJson, /playwright\/page-2026-11-23\.yml/);
+  assert.doesNotMatch(fileJson, /File \/C:/);
+  // Click the file link button and verify normalized Windows path
+  const fileBtn = fileRow.props.collapsedContent.children.find(child => child?.tag === 'button');
+  assert.ok(fileBtn);
+  fileBtn.props.onClick({ stopPropagation() {} });
+  assert.deepEqual(calls, ['C:/Users/admin/.dsh/artifacts/playwright/page-2026-11-23.yml']);
+
+  // 3. Expanded command renders native TerminalBlock
+  const cmdRendered = Card({
+    node: { data: { interrupted: false, state: {
+      id: '3', category: 'command', status: 'failed', startedAt: 10, settledAt: 100,
+      title: 'Run command', target: 'python -c "print(1)"', paths: [], diffs: [], output: 'Traceback...',
+    } } },
+    useDisclosure: () => ({ expanded: true, toggle() {} }),
+  });
+  const cmdRow = cmdRendered.children[0];
+  assert.equal(cmdRow.props.title, 'Run command');
+  const terminalNode = cmdRow.children[0].children[0].children[0];
+  assert.equal(terminalNode.tag, TerminalBlock);
+  assert.equal(terminalNode.props.exitCode, 1);
+  assert.match(JSON.stringify(cmdRow.props.collapsedContent), /Failed/);
 });
 
 test('client negotiates only after both the optional Conversation API and the keyed chat seat mount', async () => {
