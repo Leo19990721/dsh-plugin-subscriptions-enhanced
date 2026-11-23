@@ -68,7 +68,7 @@ await mkdir(join(root, 'lib'), { recursive: true });
 await writeFile(join(root, 'lib/index.js'), host);
 await writeFile(join(root, 'lib/client.js'), client);
 for (const name of ['writing-policy.js', 'writing-host.js', 'agy-local-plugin.js', 'agy-local-host.js', 'agy-local-runtime.js',
-  'agy-local-context.js', 'agy-local-progress.js', 'agy-local-proxy.js', 'agy-local-mcp.js', 'agy-local-lineage.js', 'agy-local-storage.js', 'agy-local-persona.js',
+  'agy-local-background.js', 'agy-local-context.js', 'agy-local-progress.js', 'agy-local-proxy.js', 'agy-local-mcp.js', 'agy-local-lineage.js', 'agy-local-storage.js', 'agy-local-persona.js',
   'agy-ingress.js', 'agy-identity.js', 'agy-launch.js', 'agy-acp-client.js', 'agy-session.js', 'agy-turn-session.js', 'agy-turn-options.js']) {
   await copyFile(join(root, 'src', name), join(root, 'lib', name));
 }

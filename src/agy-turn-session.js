@@ -18,9 +18,9 @@ const sameSnapshot = (a, b) => a === b || Boolean(a && b && sameSelector(a.model
  * the wrapper; close and reopen the same official ID to refresh it.
  */
 export function createAgyTurnSession({ cwd, makeClient, timeLimits, mcpServers, captureHistory, onPermission,
-  configTimeoutMs = timeLimits?.open ?? 20_000, ignoreUnchangedConfigNotices = false }) {
+  onBackgroundUpdate, onBackgroundPermission, onDisconnect, configTimeoutMs = timeLimits?.open ?? 20_000, ignoreUnchangedConfigNotices = false }) {
   let session, transport, options, prepared, current, batch, closing;
-  let poisoned = false, disconnected = false;
+  let poisoned = false, disconnected = false, dispatched = false;
   const live = () => !poisoned && !disconnected && !closing;
 
   function invalidate() {
@@ -112,19 +112,24 @@ export function createAgyTurnSession({ cwd, makeClient, timeLimits, mcpServers, 
   const outsidePrompt = params => current?.kind === 'turn' && (!current.writing || current.terminalArrived)
     && own(params, 'sessionId') === session.id;
 
-  session = new AgySession({ cwd, timeLimits, mcpServers, captureHistory, makeClient(hooks) {
+  session = new AgySession({ cwd, timeLimits, mcpServers, captureHistory,
+    onBackgroundUpdate: update => { if (live() && dispatched) onBackgroundUpdate?.(update); }, makeClient(hooks) {
     transport = makeClient({
       onUpdate(params) {
         observe(params);
-        if (!outsidePrompt(params)) hooks.onUpdate(params);
+        // The wire response seals a prompt synchronously, before runTurn's
+        // finally clears #turn. Route either side of that microtask identically.
+        hooks.onUpdate(params, outsidePrompt(params));
       },
       onPermission(params) {
         const turn = current;
-        if (turn?.kind !== 'turn' || !live() || !turn.writing || turn.terminalArrived || turn.signal.aborted
-          || own(params, 'sessionId') !== session.id || !onPermission) return CANCELLED_PERMISSION;
-        return onPermission(params, turn.signal);
+        if (!live() || !dispatched || !session.usable || own(params, 'sessionId') !== session.id) return CANCELLED_PERMISSION;
+        if (turn?.kind === 'turn' && turn.writing && !turn.terminalArrived) {
+          return !turn.signal.aborted && onPermission ? onPermission(params, turn.signal) : CANCELLED_PERMISSION;
+        }
+        return onBackgroundPermission?.(params) ?? CANCELLED_PERMISSION;
       },
-      onClosed(error) { disconnected = true; invalidate(); hooks.onClosed(error); },
+      onClosed(error) { disconnected = true; invalidate(); hooks.onClosed(error); onDisconnect?.(); },
     });
     return {
       start() {
@@ -164,10 +169,10 @@ export function createAgyTurnSession({ cwd, makeClient, timeLimits, mcpServers, 
             checkWrite(); // Also refuse a Stop or close triggered reentrantly by the guard.
           },
           onWriteStarted() {
-            turn.writing = true;
+            dispatched = turn.writing = true;
             onDispatch?.();
           },
-          onResponse() { turn.terminalArrived = true; },
+          onResponse() { turn.terminalArrived = true; turn.onTerminal?.(); },
         });
         const stopReason = own(result, 'stopReason');
         turn.stopReason = stopReason;
@@ -221,11 +226,11 @@ export function createAgyTurnSession({ cwd, makeClient, timeLimits, mcpServers, 
     },
 
     // beforeDispatch may deny the prompt. onDispatch only marks the write attempt.
-    async runTurn(input, { contextText, signal, onDelta, onThought, onTool, beforeDispatch, onDispatch } = {}) {
+    async runTurn(input, { contextText, signal, onDelta, onThought, onTool, beforeDispatch, onDispatch, onTerminal } = {}) {
       if (!live() || !session.usable || current || !prepared || prepared !== options) throw fail('turn-unavailable');
       if (!(typeof input === 'string' ? input.trim() !== '' : Array.isArray(input) && input.length > 0)
         || (contextText !== undefined && typeof contextText !== 'string')
-        || typeof onDelta !== 'function' || [onThought, onTool, beforeDispatch, onDispatch].some(fn => fn !== undefined && typeof fn !== 'function')) {
+        || typeof onDelta !== 'function' || [onThought, onTool, beforeDispatch, onDispatch, onTerminal].some(fn => fn !== undefined && typeof fn !== 'function')) {
         throw fail('turn-unavailable');
       }
       try { readAbortState.call(signal); }
@@ -236,6 +241,7 @@ export function createAgyTurnSession({ cwd, makeClient, timeLimits, mcpServers, 
       turn.contextText = contextText === '' ? undefined : contextText;
       turn.beforeDispatch = beforeDispatch;
       turn.onDispatch = onDispatch;
+      turn.onTerminal = onTerminal;
       turn.signal = signal;
       try {
         const result = await session.runTurn(input, { signal, onDelta, onThought, onTool, onUsage: value => { turn.contextUsage = { ...turn.contextUsage, ...value }; } });
@@ -248,6 +254,11 @@ export function createAgyTurnSession({ cwd, makeClient, timeLimits, mcpServers, 
         poison();
         throw error;
       } finally { end(turn); }
+    },
+
+    cancelBackground() {
+      if (!live() || !dispatched || !session.usable || (current?.kind === 'turn' && !outsidePrompt({ sessionId: session.id }))) return;
+      return transport.notify('session/cancel', { sessionId: session.id });
     },
 
     close() {

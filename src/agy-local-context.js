@@ -12,9 +12,13 @@ const textOnly = message => blocksText(message?.content);
 const boundText = text => text.length <= MESSAGE_CHARS ? text
   : `${text.slice(0, MESSAGE_CHARS / 2)}\n[... shortened ...]\n${text.slice(-MESSAGE_CHARS / 2)}`;
 
-export function localSubmissions(session, turnStart) {
+export const backgroundSummary = 'Antigravity 后台任务继续执行';
+export const isBackgroundNotice = message => message?.source?.kind === 'tool-jobs'
+  && message.source.form === 'notice' && message.source.summary === backgroundSummary;
+
+export function localSubmissions(session, turnStart, matchesBackground = () => false) {
   return session.snapshotEvents(turnStart).flatMap(event => event.type === 'user/message' && event.surfaceOp === 'append'
-    && (isUser(event.data) || isNativeDelivery(event.data)) ? [event.data] : []);
+    && (isUser(event.data) || isNativeDelivery(event.data) || matchesBackground(event.data)) ? [event.data] : []);
 }
 
 function collectHistory(session, before, afterTurn) {
@@ -47,6 +51,10 @@ function collectHistory(session, before, afterTurn) {
     } else if (!current) continue;
     else if (event.surfaceOp === 'append') {
       if (type === 'user/message' && (isUser(data) || isNativeDelivery(data))) current.hasUser = true;
+      // Attribution here selects historical assistant text, never live admission.
+      if (type === 'user/message' && isBackgroundNotice(data)) current.background = true;
+      if (type === 'assistant/message' && current.background && !data.interrupted && data.turn === current.turn
+        && data.message?.source?.provider === 'antigravity') current.hasUser = true;
       const row = type === 'user/message' && (isUser(data) || isNativeDelivery(data)) ? [isUser(data) ? 'user' : data.source.kind, data]
         : type === 'assistant/message' && !data.interrupted && data.turn === current.turn ? ['assistant', data.message] : undefined;
       if (!row) continue;

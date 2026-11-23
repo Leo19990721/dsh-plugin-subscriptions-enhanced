@@ -120,14 +120,16 @@ export class AgySession {
   #timeLimits;
   #mcpServers;
   #captureHistory;
+  #onBackgroundUpdate;
 
-  constructor({ cwd, makeClient, timeLimits = {}, mcpServers = [], captureHistory = true }) {
+  constructor({ cwd, makeClient, timeLimits = {}, mcpServers = [], captureHistory = true, onBackgroundUpdate }) {
     this.#cwd = cwd;
     this.#mcpServers = mcpServers;
     this.#captureHistory = captureHistory;
+    this.#onBackgroundUpdate = onBackgroundUpdate;
     this.#timeLimits = { open: 20_000, turn: 20 * 60_000, cancel: 8_000, permission: 120_000, ...timeLimits };
     this.#client = makeClient({
-      onUpdate: params => this.#update(params),
+      onUpdate: (params, outside = false) => this.#update(params, outside),
       onPermission: params => this.#permission(params),
       onClosed: () => { this.#closed = true; this.#resolvePermissions(); },
     });
@@ -228,7 +230,7 @@ export class AgySession {
     return promise;
   }
 
-  #update(params) {
+  #update(params, outside) {
     if (this.#closed || this.#broken || !record(params?.update)) return;
     const update = params.update;
     if (this.#replay?.id === params.sessionId) {
@@ -239,7 +241,11 @@ export class AgySession {
       this.#title = cleanLabel(update.title, 120);
     }
     const turn = this.#turn;
-    if (!turn || params.sessionId !== this.#id) return;
+    if (this.#id === undefined || this.#id !== params.sessionId) return;
+    if (!turn || outside) {
+      if (this.usable) this.#onBackgroundUpdate?.(update);
+      return;
+    }
     if (['agent_message_chunk', 'agent_thought_chunk'].includes(update.sessionUpdate) && update.content?.type === 'text') {
       const delta = update.content.text;
       if (typeof delta !== 'string' || !delta) return;

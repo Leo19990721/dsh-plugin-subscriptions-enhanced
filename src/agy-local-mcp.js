@@ -28,11 +28,29 @@ export function agyMcpTools(ctx, agent, toolSet, servers, allowSubagents = false
 }
 
 /** Private, per-open ACP MCP capability. Without an active turn, nothing may execute. */
-export async function openAgyMcp(ctx) {
+export async function openAgyMcp(ctx, { waitMs = 5000 } = {}) {
   const token = randomUUID();
   let pipeline;
   const getPipeline = () => (pipeline ??= new ToolExecutionPipeline(ctx));
-  let active;
+  let active, wave, inFlight = 0;
+  const waiters = new Set();
+  const count = delta => { inFlight += delta; wave?.mcpCount(inFlight); };
+  const release = turn => { for (const resolve of waiters) resolve(turn); };
+  function forgetWave() {
+    if (!wave) return;
+    wave.signal.removeEventListener('abort', forgetWave);
+    if (active?.wave === wave) active = undefined;
+    release(undefined);
+    wave = undefined;
+  }
+  function waitForTurn(res) {
+    return new Promise(resolve => {
+      const done = value => { clearTimeout(timer); waiters.delete(done); res.off('close', disconnected); resolve(value); };
+      const disconnected = () => done();
+      const timer = setTimeout(disconnected, waitMs);
+      waiters.add(done); res.once('close', disconnected);
+    });
+  }
   const server = createServer(async (req, res) => {
     const end = (status, body) => {
       if (body === undefined) res.writeHead(status).end();
@@ -40,6 +58,9 @@ export async function openAgyMcp(ctx) {
     };
     if (req.url !== '/mcp' || req.headers.authorization !== `Bearer ${token}`) return end(403);
     if (req.method !== 'POST') return end(405);
+    // Pin the originating lease before reading the async body. A slow request
+    // from an idle/retired generation must not borrow a later turn's tools.
+    const origin = wave ?? active;
     let rpc;
     try {
       const parts = [];
@@ -57,6 +78,7 @@ export async function openAgyMcp(ctx) {
     if (rpc.method === 'initialize') return reply({ protocolVersion: SUPPORTED_VERSIONS.has(rpc.params?.protocolVersion)
       ? rpc.params.protocolVersion : MCP_VERSION, capabilities: { tools: {} }, serverInfo: { name: 'dsh-tools', version: '1' } });
     if (rpc.method === 'ping') return reply({});
+    let counted = false;
     try {
       if (rpc.method === 'tools/list') {
         const listed = [
@@ -68,9 +90,13 @@ export async function openAgyMcp(ctx) {
         return reply({ tools: listed });
       }
       if (rpc.method !== 'tools/call') return fail(-32601, 'Method not found');
-      const turn = active;
+      if (!origin || origin !== (wave ?? active)) return fail(-32602, 'Tool unavailable in this DSH turn');
+      count(1); counted = true;
+      // Only a signed, live wave opens this bounded wait. Never let an idle
+      // HTTP call hitch a ride on a future ordinary prompt or another wave.
+      const turn = active ?? (wave && await waitForTurn(res));
       const { name, arguments: args = {} } = rpc.params ?? {};
-      if (!turn || turn.signal.aborted || !turn.canCall()) return fail(-32602, 'Tool unavailable in this DSH turn');
+      if (res.destroyed || !turn || turn !== active || turn.signal.aborted || !turn.canCall()) return fail(-32602, 'Tool unavailable in this DSH turn');
       const disconnect = new AbortController();
       res.on('close', () => disconnect.abort());
       const callSignal = AbortSignal.any([turn.signal, disconnect.signal]);
@@ -94,6 +120,7 @@ export async function openAgyMcp(ctx) {
       }
       return reply({ content, isError: result.isError === true });
     } catch { return fail(-32603, 'DSH tool execution failed'); }
+    finally { if (counted) count(-1); }
   });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -103,9 +130,20 @@ export async function openAgyMcp(ctx) {
   return {
     servers: [{ type: 'http', name: 'dsh', url: `http://127.0.0.1:${server.address().port}/mcp`,
       headers: [{ name: 'Authorization', value: `Bearer ${token}` }] }],
-    setTurn: value => { active = value; },
+    beginWave(value) {
+      forgetWave(); active = undefined; wave = value;
+      wave.mcpCount(inFlight);
+      wave.signal.addEventListener('abort', forgetWave, { once: true });
+    },
+    get inFlight() { return inFlight; },
+    clearTurn(value) { if (active === value) active = undefined; },
+    setTurn(value) {
+      if (value && wave && value.wave !== wave) return;
+      active = value;
+      if (value) release(value);
+    },
     async close() {
-      active = undefined;
+      forgetWave(); active = undefined;
       await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
     },
   };

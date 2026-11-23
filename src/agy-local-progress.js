@@ -150,9 +150,9 @@ function answerLinks() {
 }
 
 /** Native reasoning stream; tool progress stays display-only and never runs again in DSH. */
-export function agyProgress() {
+export function agyProgress(nextIndex = 0) {
   const tools = new Map();
-  let open, nextIndex = 0;
+  let open;
   let hasAnswer = false;
   const close = () => {
     if (!open) return [];
@@ -202,6 +202,7 @@ export function agyProgress() {
       return append('text', 'answer', value);
     },
     get hasAnswer() { return hasAnswer; },
+    get nextIndex() { return nextIndex; },
     receipt() {
       if (!tools.size) return;
       const statuses = [...tools.values()].map(tool => tool.status);

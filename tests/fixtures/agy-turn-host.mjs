@@ -57,11 +57,11 @@ function fakeChild(onRequest, onExit) {
 }
 
 function fakeSessionFactory({ root, cwd, configurations, acpConfig, acpCalls, acpExits, acpPrompt, apis }) {
-  return ({ cwd: requestedCwd = cwd, signal, mcpServers, onPermission } = {}) => {
+  return ({ cwd: requestedCwd = cwd, signal, mcpServers, onPermission, onBackgroundUpdate, onBackgroundPermission, onDisconnect } = {}) => {
     signal?.throwIfAborted();
     assert.equal(requestedCwd, cwd, 'only the fixture directory can reach synthetic ACP');
     let id;
-    return createAgyTurnSession({ cwd, mcpServers, onPermission, timeLimits: { open: 2500, turn: 4500, cancel: 250 }, makeClient: callbacks => new AgyAcpClient({
+    return createAgyTurnSession({ cwd, mcpServers, onPermission, onBackgroundUpdate, onBackgroundPermission, onDisconnect, timeLimits: { open: 2500, turn: 4500, cancel: 250 }, makeClient: callbacks => new AgyAcpClient({
       ...callbacks, cwd, executable: join(root, 'never-launched-agy.exe'), env: {}, timeoutMs: 2500, allowMcpServers: Boolean(mcpServers?.length),
       spawnFactory: () => fakeChild(({ id: rpcId, method, params, result: peerResult }, child) => {
         if (method === undefined && rpcId !== undefined) return apis.onPermissionReply?.(rpcId, peerResult);

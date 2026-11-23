@@ -1,6 +1,6 @@
 // Authority is tied to an exact live DSH Agent and a committed inbox occurrence,
 // never to a caller-supplied session ID or a user-shaped durable message alone.
-export function installAgyLineage(ctx, isLocalSubmission) {
+export function installAgyLineage(ctx, isLocalSubmission, matchesBackground = () => false) {
   const ownerInput = new WeakMap();
   const authorizedRoots = new WeakSet();
   const trees = new WeakMap();
@@ -30,6 +30,7 @@ export function installAgyLineage(ctx, isLocalSubmission) {
     return messages.every(message => {
       if (carriesOwner(agent, message) || admissions.get(agent)?.ownerIds?.has(message.id)) return true;
       if (!authorizedRoots.has(root)) return false;
+      if (matchesBackground(agent, message)) return true;
       const { source } = message;
       if (source?.kind === 'user' && !source.rpcId && !source.principal && member) {
         // Only the manager's first initial task has a plain user source. A
@@ -61,7 +62,7 @@ export function installAgyLineage(ctx, isLocalSubmission) {
     const admitted = await next();
     if (admitted.kind !== 'enter') return admitted;
     const actual = admitted.messages ?? messages;
-    const inbound = actual.filter(message => ['user', 'agent-message', 'subagent-settled'].includes(message.source?.kind));
+    const inbound = actual.filter(message => ['user', 'agent-message', 'subagent-settled', 'tool-jobs'].includes(message.source?.kind));
     const root = rootOf(agent);
     const automation = actual.some(message => ['schedule', 'webhook', 'goal'].includes(message.source?.kind));
     const trusted = !automation && root && (inbound.some(message => carriesOwner(agent, message))
@@ -84,7 +85,7 @@ export function installAgyLineage(ctx, isLocalSubmission) {
     entries.set(id, { agent: child, parent: parentSessionId, initial: child?.inbox.nextTurn.find(row => row.source?.kind === 'user')?.id });
     trees.set(root, entries);
   }, { global: true });
-  return (agent, messages, boundary) => {
+  function authorize(agent, messages, boundary) {
     const admission = admissions.get(agent);
     const root = rootOf(agent);
     if (root === agent && !admission?.trusted) return false;
@@ -96,5 +97,10 @@ export function installAgyLineage(ctx, isLocalSubmission) {
       if (entry && entry.initial === undefined) entry.initial = messages.find(row => row.source?.kind === 'user' && !row.source.rpcId)?.id;
     }
     return accepted;
+  }
+  authorize.mayWake = agent => {
+    const root = rootOf(agent);
+    return Boolean(root && authorizedRoots.has(root) && (root.status !== 'running' || admissions.get(root)?.trusted));
   };
+  return authorize;
 }
