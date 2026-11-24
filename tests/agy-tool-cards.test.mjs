@@ -47,6 +47,23 @@ test('tool progress emits one durable identity, never repeats it in reasoning, a
   assert.match(agyProgress(0, { displayTool: () => false }).push(call('x', { status: 'failed', title: '<script>' })).at(-1).text, /工具失败：\\<script\\>/);
 });
 
+test('on-demand calls retain the original tool identity without logging their argument string', () => {
+  const rawInput = { name: 'mcp__playwright__browser_snapshot', arguments_json: '{"secret":"do not retain"}' };
+  const snapshot = summarizeAgyTool({ toolCallId: 'x', title: 'Run mcp_dsh_tool_call', name: 'mcp_dsh_tool_call', kind: 'other', rawInput });
+  assert.equal(snapshot.title, 'Run mcp_dsh_mcp__playwright__browser_snapshot');
+  assert.equal(snapshot.category, 'mcp');
+  assert.doesNotMatch(JSON.stringify(snapshot), /secret|do not retain/);
+  const invalid = summarizeAgyTool({ toolCallId: 'x', title: 'Run mcp_dsh_tool_call', rawInput: { name: 'foo\nsubagent' } });
+  assert.equal(invalid.title, undefined);
+  let latest;
+  const p = agyProgress(0, { displayTool(_id, data) { latest = data; return true; } });
+  p.push(call('x', { title: 'Run mcp_dsh_tool_call', rawInput: { name: 'ask_user_question', arguments_json: '{"sensitive":true}' }, status: 'in_progress' }));
+  p.push(call('x', { title: 'Run mcp_dsh_tool_call', kind: 'other', status: 'completed', content: [{ type: 'text', text: 'native question payload' }] }));
+  assert.equal(latest.title, 'Run mcp_dsh_ask_user_question');
+  assert.equal(latest.nativePanel, true);
+  assert.equal(latest.output, undefined);
+});
+
 test('native question, todo, present and subagent output is not copied over their native surfaces', () => {
   for (const name of ['todo_write', 'ask_user_question', 'present', 'subagent']) {
     let latest;

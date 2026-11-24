@@ -138,7 +138,7 @@ test('forged notices cannot bootstrap ACP; changing provider while a notice is q
 test('Stop in an attached wave sends cancel, reaps ACP and permits another native prompt', { timeout: 10000 }, async t => {
   const h = await fixture(t, { localMcpMarker: 'ready' }), { id } = h, turn = await start(h);
   turn.delta({ sessionUpdate: 'tool_call', toolCallId: 'hold', status: 'in_progress' });
-  assert.deepEqual((await rpc(turn.mcpServers[0], 'tools/call', { name: 'mcp__knowledge__dsh_integration_marker' })).result.content, [text('ready')]);
+  assert.deepEqual((await rpc(turn.mcpServers[0], 'tools/call', { name: 'tool_call', arguments: { name: 'mcp__knowledge__dsh_integration_marker', arguments_json: '{}' } })).result.content, [text('ready')]);
   ok(await h.cancel(id)); await h.idle(id);
   assert.equal(h.acpCalls.filter(e => e.method === 'session/cancel').length, 1); assert.ok(h.acpExits.includes(turn.sessionId));
   ok(await h.prompt(id, 'after stop')); await h.idle(id); assert.equal(prompts(h).length, 2);
@@ -151,7 +151,7 @@ for (const mode of ['workspace-write', 'danger-full-access']) test(`background $
   const { id } = h, turn = await start(h), gate = gateStep(h.agent(id), msgs => msgs.some(isBackgroundNotice));
   turn.delta(completed); await gate.entered;
   turn.ask('early', { toolCallId: 'early', kind: 'fetch', title: 'early' });
-  const call = rpc(turn.mcpServers[0], 'tools/call', { name: 'mcp__knowledge__dsh_integration_marker' });
+  const call = rpc(turn.mcpServers[0], 'tools/call', { name: 'tool_call', arguments: { name: 'mcp__knowledge__dsh_integration_marker', arguments_json: '{}' } });
   gate.release(); assert.deepEqual((await call).result.content, [text('ready')]);
   turn.ask('review', { toolCallId: 'review', kind: 'fetch', title: 'review' }); await received.promise;
   turn.update('reviewed'); turn.delta(usage); decision.resolve('allowed-once');
@@ -230,7 +230,7 @@ test('wire terminal revokes the tools/call lease before an async checkpoint sett
     if (row.throughTurn === 1) { entered.resolve(); return release.promise; }
   } });
   const { id } = h; ok(await h.prompt(id, 'owner')); await entered.promise;
-  try { const denied = await rpc(h.turns[0].mcpServers[0], 'tools/call', { name: 'mcp__knowledge__dsh_integration_marker' });
+  try { const denied = await rpc(h.turns[0].mcpServers[0], 'tools/call', { name: 'tool_call', arguments: { name: 'mcp__knowledge__dsh_integration_marker', arguments_json: '{}' } });
     assert.equal(denied.error.code, -32602);
   } finally { release.resolve(); }
   await h.idle(id);

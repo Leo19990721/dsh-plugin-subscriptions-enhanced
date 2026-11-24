@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { defineTool } from '@deepseek-ai/dsh-tools';
 import { mountLocalGoogle } from '../src/agy-local-host.js';
 import { Config } from '../lib/index.js';
 import { apply as applyGoogle } from '../lib/agy-local-plugin.js';
@@ -78,14 +79,106 @@ for (const [label, rawConfig, expected] of [
       const server = h.acpCalls.findLast(row => row.method === 'session/new').params.mcpServers[0];
       if (expected.length === 0) { assert.equal(server, undefined); return; }
       const response = await fetch(server.url, { method: 'POST', signal: t.signal,
-        headers: { authorization: server.headers[0].value }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) });
+        headers: { authorization: server.headers[0].value }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'tool_catalog' } }) });
       assert.equal(response.status, 200);
-      const names = (await response.json()).result.tools.map(tool => tool.name);
-      assert.deepEqual(names.filter(name => /^(?:mcp__|remote_)/.test(name)).sort(), expected);
+      const names = JSON.parse((await response.json()).result.content[0].text).tools.map(tool => tool.name);
+      assert.deepEqual(names, expected);
     } finally { turn.update('checked'); turn.reply(); }
     await h.idle(id);
   });
 }
+
+test('on-demand discovery tracks current exact tools, while cached direct declarations reopen the same ACP session', { timeout: 15_000 }, async t => {
+  const turnIds = [], endpoints = [], callsByTool = [];
+  const browser = 'mcp__playwright__browser_snapshot';
+  let activeBrowser = true, activeCore = false, coreVersion = 1, check;
+  const def = (name, description) => defineTool({
+    name, description, parameters: { value: { type: 'string', required: true }, details: { type: 'json' } },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+    async execute(args, exec) { assert.ok(exec.agent); callsByTool.push([exec.name, args.value, args.details]); return args.value; },
+  });
+  const fixtureTools = Array.from({ length: 90 }, (_, i) => def(`mcp__fixture__tool_${i}`, `Large tool ${i} — ${'参数'.repeat(800)}`));
+  let registerCore;
+  const h = await fixture(t, { localMcpMarker: 'keeps the bridge mounted', async mountTools({ ctx }) {
+    for (const tool of fixtureTools) ctx.tools.register(tool);
+    ctx.tools.register(def(browser, 'Take a Playwright accessibility snapshot'), { when: () => activeBrowser });
+    registerCore = () => ctx.tools.register(def('image_generate', `Core version ${coreVersion}`), { when: () => activeCore });
+  }, acpPrompt: turn => check.resolve(turn) });
+  let offCore = registerCore();
+  const id = await h.create();
+  ok(await h.select(id, selection));
+  async function inTurn(callback) {
+    check = Promise.withResolvers();
+    ok(await h.prompt(id, 'synthetic discovery test'));
+    const turn = await Promise.race([check.promise, h.idle(id).then(() => assert.fail(JSON.stringify(end(h, id))))]);
+    const server = turn.mcpServers[0];
+    turnIds.push(turn.sessionId); endpoints.push(server.url);
+    const rpc = async (method, params, auth = server.headers[0].value) => fetch(server.url, { method: 'POST', signal: t.signal,
+      headers: { authorization: auth }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+    const listing = async () => (await (await rpc('tools/list')).json()).result.tools;
+    const call = async (name, args) => (await (await rpc('tools/call', { name, arguments: args })).json());
+    const catalog = async args => {
+      const reply = await call('tool_catalog', args);
+      return reply.result ? JSON.parse(reply.result.content[0].text) : reply.error;
+    };
+    const invoke = (name, arguments_json) => call('tool_call', { name, arguments_json });
+    try { await callback({ listing, call, catalog, invoke, rpc }); }
+    finally { turn.update('checked'); turn.reply(); await h.idle(id); }
+    assert.equal(end(h, id).kind, 'completed');
+    assert.equal((await call('tool_catalog')).error.code, -32602, 'idle ACP cannot discover scoped tools');
+    return listing;
+  }
+  await inTurn(async ({ listing, call, catalog, invoke, rpc }) => {
+    assert.deepEqual((await listing()).map(tool => tool.name), ['tool_catalog', 'tool_call']);
+    const seen = [];
+    for (let page = await catalog({ search: 'large tool' }); ; page = await catalog({ search: 'large tool', offset: page.nextOffset })) {
+      seen.push(...page.tools.map(tool => tool.name));
+      if (page.nextOffset === undefined) break;
+    }
+    assert.deepEqual(seen, fixtureTools.map(tool => tool.name).sort());
+    const browserTool = await catalog({ name: browser });
+    assert.deepEqual(browserTool.inputSchema.required, ['value']);
+    assert.deepEqual((await catalog({ search: 'PLAYWRIGHT' })).tools.map(t => t.name), [browser]);
+    assert.equal((await catalog({ name: fixtureTools[89].name })).description, fixtureTools[89].description);
+    const value = '按需调用 — 🎨';
+    const details = { '多语言': [{ text: '中文 "引号"', count: 2 }, null, true] };
+    assert.deepEqual((await invoke(browser, JSON.stringify({ value, details }))).result.content, [{ type: 'text', text: value }]);
+    assert.equal((await invoke(browser, '{"value":42}')).result.isError, true, 'DSH validates the original schema');
+    for (const input of ['[1]', 'null', '{broken', '"value"']) assert.equal((await invoke(browser, input)).error.code, -32602);
+    for (const name of ['tool_call', 'image_generate', 'interrupt_agent', 'mcp_dsh_' + browser]) assert.equal((await invoke(name, '{}')).error.code, -32602);
+    assert.equal((await call(browser, { value: 'bypass' })).error.code, -32602);
+    assert.equal((await rpc('tools/list', undefined, 'not-authorized')).status, 403);
+  });
+  activeBrowser = false;
+  await inTurn(async ({ catalog, invoke }) => {
+    assert.deepEqual((await catalog({ search: 'playwright' })).tools, []);
+    assert.equal((await catalog({ name: browser })).code, -32602);
+    assert.equal((await invoke(browser, '{"value":"must not run"}')).error.code, -32602);
+  });
+  assert.equal(endpoints[1], endpoints[0], 'on-demand-only changes keep the ACP connection');
+  activeCore = true;
+  const idleListing = await inTurn(async ({ listing, call, invoke }) => {
+    const rows = await listing();
+    assert.deepEqual(rows.map(tool => tool.name), ['tool_catalog', 'tool_call', 'image_generate']);
+    assert.ok(rows.every(row => row._meta['antigravity/alwaysLoad'] === true));
+    assert.equal((await call('image_generate', { value: 'direct' })).result.isError, false);
+    const allowed = await invoke('image_generate', '{"value":"fallback"}');
+    assert.equal(allowed.result.isError, false);
+    offCore();
+    assert.equal((await invoke('image_generate', '{"value":"revoked"}')).error.code, -32602);
+    assert.equal((await listing()).at(-1).description, 'Core version 1', 'a withdrawn definition cannot poison the generation schema cache');
+  });
+  assert.equal((await idleListing()).at(-1).name, 'image_generate', 'declared schemas remain stable during idle refresh');
+  coreVersion = 2;
+  offCore = registerCore();
+  await inTurn(async ({ listing }) => assert.equal((await listing()).at(-1).description, 'Core version 2'));
+  assert.notEqual(endpoints[2], endpoints[1], 'new core declaration required reopening');
+  assert.notEqual(endpoints[3], endpoints[2], 'same-name definition with changed schema/description required reopening');
+  assert.equal(new Set(turnIds).size, 1, 'reopen uses the same durable ACP conversation');
+  assert.equal(h.acpCalls.filter(row => row.method === 'session/load').length, 2);
+  assert.deepEqual(callsByTool, [[browser, '按需调用 — 🎨', { '多语言': [{ text: '中文 "引号"', count: 2 }, null, true] }],
+    ['image_generate', 'direct', undefined], ['image_generate', 'fallback', undefined]]);
+});
 
 test('catalog retries transient failures after cooldown and broadcasts recovery', async t => {
   let probes = 0;
@@ -262,10 +355,11 @@ for (const mode of ['workspace-write', 'read-only']) {
     const rpc = async (method, params) => (await fetch(server.url, { method: 'POST', signal: t.signal,
       headers: { authorization: server.headers[0].value }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })).json();
     const { result } = await rpc('tools/list');
-    assert.ok(result.tools.some(tool => tool.name === 'mcp__custom-server__fixture'));
-    const denied = await rpc('tools/call', { name: 'mcp__custom-server__fixture' });
+    assert.deepEqual(result.tools.map(tool => tool.name), ['tool_catalog', 'tool_call']);
+    const invoke = name => rpc('tools/call', { name: 'tool_call', arguments: { name, arguments_json: '{}' } });
+    const denied = await invoke('mcp__custom-server__fixture');
     assert.match(JSON.stringify(denied), /synthetic native restriction/);
-    const allowed = await rpc('tools/call', { name: 'mcp__knowledge__dsh_integration_marker' });
+    const allowed = await invoke('mcp__knowledge__dsh_integration_marker');
     assert.equal(allowed.result.content[0].text, 'DSH allowed this tool');
     turn.update('checked'); turn.reply();
     await h.idle(id);

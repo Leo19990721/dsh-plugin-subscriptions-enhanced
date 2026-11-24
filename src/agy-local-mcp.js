@@ -20,6 +20,59 @@ const subscriptionBridgeTools = new Set([
 const MCP_VERSION = '2025-11-25';
 const SUPPORTED_VERSIONS = new Set(['2024-11-05', '2025-03-26', '2025-06-18', MCP_VERSION]);
 const objectValue = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const CATALOG_TOOL = 'tool_catalog';
+const CALL_TOOL = 'tool_call';
+const CATALOG_PAGE = 16;
+// Keep the direct surface deliberately small; everything else is still available
+// using its full, unmodified schema through the catalog. Native panels and the
+// native subagent control path keep their existing names.
+const directNativeTools = new Set(['ask_user_question', 'todo_write', 'present', 'read_image']);
+const directTool = name => nativeSubagentTools.has(name) || imageGenerateTools.has(name) || directNativeTools.has(name);
+const gatewayName = name => name === CATALOG_TOOL || name === CALL_TOOL;
+const eager = { 'antigravity/alwaysLoad': true };
+const wireTool = tool => {
+  const { name, description, parameters: inputSchema } = projectToolSchema(tool, false);
+  return { name, description, inputSchema };
+};
+const gatewayTool = (name, description, properties, required = []) => ({
+  name, description, inputSchema: { type: 'object', properties, required, additionalProperties: false }, _meta: eager,
+});
+const gatewayTools = [
+  gatewayTool(CATALOG_TOOL, 'Find available DeepSeek Harness tools (including Playwright, image generation and subagents). '
+    + 'Use name for the exact original input schema, or search for a capability and use nextOffset to continue.', {
+    name: { type: 'string', description: 'Exact DSH tool name for its full input schema' },
+    search: { type: 'string', description: 'Case-insensitive text in tool names or descriptions' },
+    offset: { type: 'integer', description: 'Next offset from a previous search; omit on the first page' },
+  }),
+  gatewayTool(CALL_TOOL, 'Run one exact DSH tool. Get its input schema with mcp_dsh_tool_catalog first if needed. '
+    + 'Uses the current DSH turn’s permissions and approvals.', {
+    name: { type: 'string', description: 'Exact DSH tool name from the catalog (not an MCP function alias)' },
+    arguments_json: { type: 'string', description: 'JSON-encoded arguments object; use {} for a tool without arguments' },
+  }, ['name', 'arguments_json']),
+];
+
+/** The CLI may cache declarations on open; re-open if a direct schema changes. */
+export const agyMcpDeclarations = tools => [...tools.values()].filter(tool => directTool(tool.name))
+  .sort((a, b) => a.name < b.name ? -1 : a.name === b.name ? 0 : 1)
+  .map(tool => ({ ...wireTool(tool), _meta: eager }));
+
+function catalogResponse(tools, args) {
+  if (!objectValue(args)) return;
+  if (Object.hasOwn(args, 'name')) {
+    const tool = typeof args.name === 'string' && tools.find(tool => tool.name === args.name);
+    return tool ? wireTool(tool) : undefined;
+  }
+  const { search = '', offset = 0 } = args;
+  if (typeof search !== 'string' || !Number.isSafeInteger(offset) || offset < 0) return;
+  const query = search.trim().toLowerCase();
+  const matches = tools.filter(tool => tool.name.toLowerCase().includes(query) || tool.description?.toLowerCase().includes(query))
+    .sort((a, b) => a.name < b.name ? -1 : a.name === b.name ? 0 : 1);
+  const page = matches.slice(offset, offset + CATALOG_PAGE).map(({ name, description }) => ({
+    name, description: description?.replace(/\s+/gu, ' ').slice(0, 160),
+    ...(directTool(name) ? { direct: `mcp_dsh_${name}` } : {}),
+  }));
+  return { tools: page, ...(offset + CATALOG_PAGE < matches.length ? { nextOffset: offset + CATALOG_PAGE } : {}) };
+}
 
 export async function mcpToolResult(ctx, name, result, signal) {
   const content = [];
@@ -49,7 +102,7 @@ export async function mcpToolResult(ctx, name, result, signal) {
 export function agyMcpTools(ctx, agent, toolSet, servers, allowSubagents = false) {
   const prefixes = servers === undefined || servers.includes('*') ? undefined : servers.flatMap(serverPrefix);
   if (typeof ctx.tools?.definitions !== 'function' || typeof ctx.tools.executable !== 'function') return new Map();
-  const defs = ctx.tools.definitions(agent, toolSet).filter(tool => ctx.tools.executable(tool.name, agent, toolSet) === tool);
+  const defs = ctx.tools.definitions(agent, toolSet).filter(tool => !gatewayName(tool.name) && ctx.tools.executable(tool.name, agent, toolSet) === tool);
   const hasImageGen = prefixes === undefined && defs.some(({ name }) => imageGenerateTools.has(name));
   return new Map(defs.filter(({ name }) => (allowSubagents && nativeSubagentTools.has(name)) || (prefixes
     ? prefixes.some(prefix => name.startsWith(prefix))
@@ -59,7 +112,11 @@ export function agyMcpTools(ctx, agent, toolSet, servers, allowSubagents = false
 }
 
 /** Private, per-open ACP MCP capability. Without an active turn, nothing may execute. */
-export async function openAgyMcp(ctx, { waitMs = 5000 } = {}) {
+export async function openAgyMcp(ctx, { waitMs = 5000, declarations = [] } = {}) {
+  // Publish a schema-only snapshot, even when the CLI refreshes while idle.
+  // Never let a transiently removed registration poison its declaration cache;
+  // the separate request lease still rechecks every lookup and execution.
+  const declarationPayload = JSON.stringify([...gatewayTools, ...declarations]);
   const token = randomUUID();
   let pipeline;
   const getPipeline = () => (pipeline ??= new ToolExecutionPipeline(ctx));
@@ -119,11 +176,10 @@ export async function openAgyMcp(ctx, { waitMs = 5000 } = {}) {
     let counted = false;
     try {
       if (rpc.method === 'tools/list') {
-        const listed = listedTools(active).map(tool => {
-          const { name, description, parameters: inputSchema } = projectToolSchema(tool, false);
-          return { name, description, inputSchema };
-        });
-        return reply({ tools: listed });
+        // ACP can eagerly load all supplied declarations and silently truncate
+        // them. Expose a fixed discovery surface; only core tools use direct
+        // declarations. The entire exact DSH set remains available on demand.
+        return reply({ tools: JSON.parse(declarationPayload) });
       }
       if (rpc.method !== 'tools/call') return fail(-32601, 'Method not found');
       if (!origin || origin !== (wave ?? active)) return fail(-32602, 'Tool unavailable in this DSH turn');
@@ -131,8 +187,20 @@ export async function openAgyMcp(ctx, { waitMs = 5000 } = {}) {
       // HTTP call hitch a ride on a future ordinary prompt or another wave.
       if (origin === wave) { count(origin, 1); counted = true; }
       const turn = active ?? (wave && await waitForTurn(res));
-      const { name, arguments: args = {} } = rpc.params ?? {};
+      let { name, arguments: args = {} } = rpc.params ?? {};
       if (res.destroyed || origin !== (wave ?? active) || !turn || turn !== active || turn.signal.aborted || !turn.canCall()) return fail(-32602, 'Tool unavailable in this DSH turn');
+      if (name === CATALOG_TOOL) {
+        const found = catalogResponse(listedTools(turn), args);
+        return found ? reply({ content: [{ type: 'text', text: JSON.stringify(found) }], isError: false })
+          : fail(-32602, 'Invalid discovery request or tool unavailable in this DSH turn');
+      }
+      if (name === CALL_TOOL) {
+        if (!objectValue(args) || typeof args.name !== 'string' || typeof args.arguments_json !== 'string') return fail(-32602, 'Expected a tool name and JSON arguments object');
+        name = args.name;
+        if (gatewayName(name)) return fail(-32602, 'Tool unavailable in this DSH turn');
+        try { args = JSON.parse(args.arguments_json); } catch { return fail(-32602, 'Invalid JSON arguments'); }
+        if (!objectValue(args)) return fail(-32602, 'Expected a JSON arguments object');
+      } else if (!directTool(name)) return fail(-32602, 'Use the DSH tool catalog and exact-name invocation');
       const disconnect = new AbortController();
       res.on('close', () => disconnect.abort());
       const callSignal = AbortSignal.any([turn.signal, disconnect.signal]);

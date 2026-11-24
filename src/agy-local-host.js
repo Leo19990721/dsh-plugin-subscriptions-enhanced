@@ -4,7 +4,7 @@ import { isAgyReadOnlyRefPath, matchesAgyReadOnlyRef, withinAgyWritableRoots } f
 import { LlmAdapter, LlmError, createUserMessage, resolveRetryPolicy, isAgentLoopRequest } from '@deepseek-ai/dsh-llm';
 import { backgroundSummary, isBackgroundNotice, prepareLocalHistory, localPrompt, localSubmissions } from './agy-local-context.js';
 import { backgroundEvent, backgroundWave, trackAgyTool } from './agy-local-background.js';
-import { agyMcpTools, openAgyMcp } from './agy-local-mcp.js';
+import { agyMcpDeclarations, agyMcpTools, openAgyMcp } from './agy-local-mcp.js';
 import { resolveAgyPresetPersona } from './agy-local-persona.js';
 import { agyProgress, agyUsage } from './agy-local-progress.js';
 import { AGY_MAX_TOOL_CALLS, AGY_TOOL_RECORD } from './agy-local-tool-data.js';
@@ -619,8 +619,13 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
           runtime.workspaceFingerprint?.(cwd, turnSignal), runtime.proxyFingerprint?.(turnSignal),
         ]);
         const compaction = agent.session.snapshotEvents().findLast(event => event.type === 'compaction/summary' && event.seq < step)?.seq ?? -1;
+        // On-demand capabilities always use the current lease; only the
+        // eagerly cached declarations (or a bridge appearing/disappearing)
+        // require reopening the official conversation.
+        const declarations = agyMcpDeclarations(tools);
+        const nativeSchedules = tools.has('schedule_create') || tools.has('schedule_edit');
         const routeKey = (workspace, proxy) => JSON.stringify([mode, approvalPolicy, workspaceRoot, additionalWritableRoots,
-          preset, persona, workspace, proxy, compaction, [...tools.keys()].sort()]);
+          preset, persona, workspace, proxy, compaction, tools.size !== 0, nativeSchedules, declarations]);
         const createdAt = agent.session.header.createdAt;
         const stored = chat.binding ?? await runtime.readBinding?.(id);
         const binding = stored?.createdAt === createdAt ? stored : undefined;
@@ -631,7 +636,7 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
           if (chat.session && (fresh || !chat.session.options || chat.routeKey !== routeKey(workspaceFingerprint, proxyFingerprint)
             || !sameAgyPath(chat.cwd, cwd))) await closeChat(chat, true);
           if (!chat.session) {
-            if (tools.size) chat.bridge = await openAgyMcp(ctx, { waitMs: config.backgroundTiming?.waitMs });
+            if (tools.size) chat.bridge = await openAgyMcp(ctx, { waitMs: config.backgroundTiming?.waitMs, declarations });
             chat.bridge?.setTurn(mcpTurn);
             const open = officialId => {
               const epoch = chat.epoch = { approvals: 0 };
@@ -644,7 +649,7 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
                 onBackgroundPermission: params => ensureBackgroundWave(chat, epoch)?.permission(params) ?? cancelledPermission,
                 onDisconnect() { if (chat.epoch === epoch) { chat.armed = false; chat.bg?.finish(); } },
                 nativeSubagents: tools.has('subagent'), nativeQuestions: tools.has('ask_user_question'),
-                nativeSchedules: tools.has('schedule_create') || tools.has('schedule_edit'), mcpServers: chat.bridge?.servers,
+                nativeSchedules, mcpServers: chat.bridge?.servers,
                 async onPermission(params, control) {
                   epoch.approvals++; chat.permissionActivity?.();
                   try { return await permission(ctx, agent, params, control, chat.readOnlyRefs ?? []); }

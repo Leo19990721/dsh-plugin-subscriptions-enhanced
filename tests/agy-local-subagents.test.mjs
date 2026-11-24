@@ -87,7 +87,8 @@ async function call(rpc, name, args = {}) {
 async function listed(rpc) {
   const { result } = await rpc('tools/list');
   assert.ok(Array.isArray(result?.tools));
-  return result.tools.map(tool => tool.name).sort();
+  assert.deepEqual(result.tools.slice(0, 2).map(tool => tool.name), ['tool_catalog', 'tool_call']);
+  return result.tools.slice(2).map(tool => tool.name).sort();
 }
 
 async function* answer(value) {
