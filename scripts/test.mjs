@@ -9,7 +9,7 @@ if (process.argv.includes('--require-installed') && !installed) {
 }
 if (installed) await import('./runtime-hook.mjs');
 const files = ['tests/client.test.mjs', 'tests/release.test.mjs', 'tests/writing.test.mjs', 'tests/retire-antigravity.test.mjs',
-  'tests/agy-acp-client.test.mjs', 'tests/agy-session.test.mjs', 'tests/agy-host.test.mjs', 'tests/agy-client.test.mjs', 'tests/agy-release-status.test.mjs',
+  'tests/agy-acp-client.test.mjs', 'tests/agy-session.test.mjs', 'tests/agy-host.test.mjs', 'tests/agy-quota-host.test.mjs', 'tests/agy-client.test.mjs', 'tests/agy-release-status.test.mjs',
   'tests/agy-turn-context.test.mjs', 'tests/agy-turn-options.test.mjs', 'tests/agy-turn-session.test.mjs', 'tests/agy-turn-executor.test.mjs',
   'tests/agy-native-trial-auth.test.mjs', 'tests/agy-native-trial.test.mjs', 'tests/agy-subscription-cli.test.mjs', 'tests/agy-local-runtime.test.mjs',
   'tests/v030-gemini6-portable.test.mjs', 'tests/agy-local-file-links.test.mjs', 'tests/agy-local-background.test.mjs', 'tests/agy-tool-cards.test.mjs'];

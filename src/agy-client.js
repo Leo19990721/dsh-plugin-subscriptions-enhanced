@@ -14,7 +14,6 @@ const agyCopy = {
     unavailable: '无法连接 Google Antigravity，请检查本机代理后重试。',
     unavailableShort: '连接失败',
     retry: '重新检查',
-    openQuota: '查看额度',
     refreshQuota: '刷新额度',
     openingQuota: '正在查询额度…',
     quotaUpdated: '额度已更新',
@@ -63,7 +62,6 @@ const agyCopy = {
     unavailable: 'Could not connect to Google Antigravity. Check your local proxy and try again.',
     unavailableShort: 'Unavailable',
     retry: 'Check again',
-    openQuota: 'Check quota',
     refreshQuota: 'Refresh quota',
     openingQuota: 'Checking quota…',
     quotaUpdated: 'Quota updated',
@@ -187,6 +185,10 @@ function useEnhancedGoogleStatus(rpc, quotaState) {
     setBusy(undefined);
   }, []);
 
+  const checkQuota = react.useCallback(force => {
+    if (!actionAbort.current) void quotaState.query(rpc, { force, maxAgeMs: AGY_QUOTA_VIEW_MAX_AGE_MS });
+  }, [rpc, quotaState]);
+
   return {
     status: state?.status,
     modelCount: state?.modelCount ?? 0,
@@ -199,9 +201,7 @@ function useEnhancedGoogleStatus(rpc, quotaState) {
     recheck,
     login: () => runAction('login'),
     logout: () => runAction('logout'),
-    openQuota: () => {
-      if (!actionAbort.current && state?.status === 'ready') void quotaState.query(rpc, { force: true });
-    },
+    checkQuota,
     cancelAuth,
   };
 }
@@ -366,6 +366,10 @@ function EnhancedGoogleRow({ sectionId, state, open, toggle, t, agyT }) {
         ? agyT('readyWithCount', { count: state.modelCount })
         : agyT(status);
   const expanded = open || busy === 'login';
+  const checkQuota = state.checkQuota;
+  react.useEffect(() => {
+    if (expanded && connected) checkQuota(false);
+  }, [expanded, connected, checkQuota]);
   const quotaEnabled = connected && !checking && !busy;
   const errorText = state.error === true ? agyT('authFailed') : state.error;
 
@@ -426,8 +430,8 @@ function EnhancedGoogleRow({ sectionId, state, open, toggle, t, agyT }) {
         type: 'button',
         'aria-disabled': !quotaEnabled,
         style: quotaEnabled ? undefined : { opacity: 0.4, cursor: 'default' },
-        onClick: () => { if (quotaEnabled) void state.openQuota(); },
-      }, agyT(state.quota ? 'refreshQuota' : 'openQuota')),
+        onClick: () => { if (quotaEnabled) checkQuota(true); },
+      }, agyT('refreshQuota')),
       connected && h('button', {
         type: 'button',
         disabled: checking || Boolean(busy),

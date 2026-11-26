@@ -73,6 +73,42 @@ const agyDockCss = `
 }
 `;
 
+const AGY_QUOTA_DOCK_MAX_AGE_MS = 10 * 60_000;
+
+function watchAgyDockQuota(rpc, quotaState) {
+  let timer, unsubscribe;
+  const options = { maxAgeMs: AGY_QUOTA_DOCK_MAX_AGE_MS };
+  const clearTimer = () => clearTimeout(timer);
+  const schedule = () => {
+    clearTimer();
+    if (document.visibilityState === 'hidden') return;
+    const dueAt = quotaState.nextRefreshAt(options.maxAgeMs);
+    if (dueAt === Infinity) return; // The pending result will reschedule us.
+    timer = setTimeout(check, Math.max(AGY_QUOTA_MIN_RETRY_MS, dueAt - Date.now()));
+  };
+  function check() {
+    if (document.visibilityState !== 'hidden') void quotaState.query(rpc, options);
+    schedule();
+  }
+  const onVisibility = () => {
+    if (document.visibilityState === 'hidden') {
+      clearTimer();
+      unsubscribe?.();
+      unsubscribe = undefined;
+    } else {
+      unsubscribe ??= quotaState.subscribe(schedule);
+      check();
+    }
+  };
+  document.addEventListener('visibilitychange', onVisibility);
+  onVisibility();
+  return () => {
+    document.removeEventListener('visibilitychange', onVisibility);
+    unsubscribe?.();
+    clearTimer();
+  };
+}
+
 function AgyUsageBadge({ rpc, t = fallbackTranslate, agyT = fallbackAgyTranslate, quotaState }) {
   const h = react.createElement;
   const mode = useUsageBadgeMode();
@@ -93,6 +129,9 @@ function AgyUsageBadge({ rpc, t = fallbackTranslate, agyT = fallbackAgyTranslate
     if (panelPlaced) refreshRef.current?.focus({ preventScroll: true });
   }, [panelPlaced]);
   react.useEffect(() => { if (!visible) setOpen(false); }, [visible]);
+  react.useEffect(() => {
+    if (visible) return watchAgyDockQuota(rpc, quotaState);
+  }, [visible, rpc, quotaState]);
   react.useEffect(() => {
     if (!showPanel) return;
     const onKeyDown = event => {
@@ -115,7 +154,8 @@ function AgyUsageBadge({ rpc, t = fallbackTranslate, agyT = fallbackAgyTranslate
   const title = t('usageBadgeTitle');
   // A local reset time is enough; this badge does not need a presentation timer either.
   const now = new Date();
-  const label = `${agyDockSummary(quota, agyT, now.getTime())}${quota && failed ? ` · ${agyT('dockStale')}` : ''}`;
+  const label = !quota && busy ? `${agyT('title')} · ${agyT('openingQuota')}`
+    : `${agyDockSummary(quota, agyT, now.getTime())}${quota && failed ? ` · ${agyT('dockStale')}` : ''}`;
   return h('span', { ref: anchorRef, style: styles.anchor },
     h('style', null, subscriptionChromeCss + agyQuotaCss + agyDockCss),
     h('button', {
@@ -127,7 +167,7 @@ function AgyUsageBadge({ rpc, t = fallbackTranslate, agyT = fallbackAgyTranslate
       onMouseEnter: () => setHover(true), onMouseLeave: () => setHover(false),
       onClick: () => {
         setOpen(!showPanel);
-        if (!showPanel) void quotaState.query(rpc);
+        if (!showPanel) void quotaState.query(rpc, { maxAgeMs: AGY_QUOTA_VIEW_MAX_AGE_MS });
       },
     }, h(UsageBadgeIcon), h('span', { style: styles.label }, label)),
     showPanel && react_dom.createPortal(h('div', {

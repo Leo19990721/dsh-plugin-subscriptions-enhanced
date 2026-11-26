@@ -10,11 +10,11 @@ const footer = 'settings.models.footer';
 const nextTick = () => new Promise(resolve => setImmediate(resolve));
 
 function activate(lang, now = Date.now()) {
-  let module;
-  const timers = [];
+  let module, nextTimer = 0, badgeMode;
+  const timers = new Map();
   const docEvents = new Map();
   const document = {
-    body: {},
+    body: {}, visibilityState: 'visible',
     addEventListener(name, listener) { docEvents.set(name, listener); },
     removeEventListener(name, listener) { if (docEvents.get(name) === listener) docEvents.delete(name); },
   };
@@ -26,12 +26,16 @@ function activate(lang, now = Date.now()) {
       constructor(...args) { super(...(args.length ? args : [now])); }
       static now() { return now; }
     },
-    setInterval(fn, ms) { return timers.push({ fn, ms }); },
+    setTimeout(fn, ms) {
+      const id = ++nextTimer;
+      timers.set(id, { fn, at: now + ms });
+      return id;
+    },
+    clearTimeout(id) { timers.delete(id); },
+    setInterval() {}, // Models has an unrelated display clock.
     clearInterval() {},
-    setTimeout,
-    clearTimeout,
     window: {
-      localStorage: { getItem: () => null, setItem() {} },
+      localStorage: { getItem: key => key === 'dsh.subscriptions.usageBadgeMode' ? badgeMode : null, setItem() {} },
       addEventListener() {},
       removeEventListener() {},
       __ModuleLoader__: { load(value) { module = value; } },
@@ -46,6 +50,8 @@ function activate(lang, now = Date.now()) {
   let stateIndex = 0;
   let refIndex = 0;
   let effectIndex = 0;
+  let callbackIndex = 0;
+  const sameDeps = (a, b) => a && b && a.length === b.length && a.every((value, index) => Object.is(value, b[index]));
   let renderStarted = false;
   const React = {
     Fragment: Symbol.for('react.fragment'),
@@ -71,7 +77,12 @@ function activate(lang, now = Date.now()) {
       if (!Object.hasOwn(refs, at)) refs[at] = { current: initial };
       return refs[at];
     },
-    useCallback(fn) { return fn; },
+    useCallback(fn, deps) {
+      const at = callbackIndex++;
+      const callbacks = hooks.callbacks ??= [];
+      if (!sameDeps(callbacks[at]?.deps, deps)) callbacks[at] = { fn, deps };
+      return callbacks[at].fn;
+    },
     useSyncExternalStore(_sub, getSnapshot) { return getSnapshot(); },
     useEffect(create, deps) {
       const at = effectIndex++;
@@ -105,7 +116,20 @@ function activate(lang, now = Date.now()) {
   });
   const entry = slots.find(item => item.id === accountsSlot);
   const injected = entry.inject();
-  let cleanups = [];
+  function cleanupEffects(target) {
+    for (const item of target.committed ?? []) item?.cleanup?.();
+    target.committed = [];
+  }
+  function commitEffects(target) {
+    const previous = target.committed ?? [];
+    target.committed = effects.map((item, index) => {
+      const old = previous[index];
+      if (old && sameDeps(item.deps, old.deps)) return old;
+      old?.cleanup?.();
+      return { deps: item.deps, cleanup: item.create() };
+    });
+    for (const old of previous.slice(effects.length)) old?.cleanup?.();
+  }
   function renderComponent(el) {
     if (!el || typeof el !== 'object') return el;
     if (Array.isArray(el)) return el.map(renderComponent);
@@ -119,6 +143,24 @@ function activate(lang, now = Date.now()) {
   }
   return {
     slots, locales, calls, models, timers, events, docEvents,
+    now: () => now,
+    setBadgeMode(mode) { badgeMode = mode; },
+    setVisibility(state) {
+      document.visibilityState = state;
+      docEvents.get('visibilitychange')?.();
+    },
+    advance(ms) {
+      const end = now + ms;
+      for (;;) {
+        const next = [...timers].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+        if (!next) break;
+        const [id, { at, fn }] = next;
+        now = at;
+        timers.delete(id);
+        fn();
+      }
+      now = end;
+    },
     dock(id) {
       const dock = slots.find(item => item.id === 'subscription-usage');
       const props = dock.inject(id);
@@ -130,31 +172,25 @@ function activate(lang, now = Date.now()) {
     renderBadge(dock) {
       return this.render(({ t, agyT }) => ({ ...dock, props: { ...dock.props, t, agyT } }));
     },
-    runRenderedEffects() {
-      const off = effects.map(item => item?.create?.()).filter(fn => typeof fn === 'function');
-      return () => { for (const fn of off) fn(); };
-    },
     render(view) {
       hooks = view ? dockHooks : pageHooks;
-      stateIndex = 0;
-      refIndex = 0;
-      effectIndex = 0;
+      stateIndex = refIndex = effectIndex = callbackIndex = 0;
       effects.length = 0;
       renderStarted = true;
       const dictionary = locales.get(endpoint)?.[lang];
       const agyT = (key, args) => (dictionary?.[key] ?? key).replace(/\{(\w+)\}/g, (_, name) => args?.[name]);
-      return renderComponent(view ? view({ t: key => key, agyT }) : entry.view({ ...injected, t: key => key, agyT }));
+      const tree = renderComponent(view ? view({ t: key => key, agyT }) : entry.view({ ...injected, t: key => key, agyT }));
+      if (hooks.mounted) commitEffects(hooks);
+      return tree;
     },
     mount() {
-      cleanups = effects.map(item => item?.create?.()).filter(fn => typeof fn === 'function');
-      return () => { for (const fn of cleanups) fn(); cleanups = []; };
-    },
-    runAgyEffect() {
-      // Run the Google status effect specifically when attempt changes.
-      const prev = cleanups;
-      for (const fn of prev) fn();
-      cleanups = effects.map(item => item?.create?.()).filter(fn => typeof fn === 'function');
-      return () => { for (const fn of cleanups) fn(); cleanups = []; };
+      const target = hooks;
+      target.mounted = true;
+      commitEffects(target);
+      return () => {
+        target.mounted = false;
+        cleanupEffects(target);
+      };
     },
   };
 }
@@ -171,13 +207,14 @@ const dockDialog = tree => nodes(tree).find(n => n.props?.role === 'dialog');
 const dockRefresh = tree => nodes(tree).find(n => n.props?.className === 'dsh-agy-dock-refresh');
 const selected = (provider = 'antigravity', routable = true) => ({ current: { provider }, routable });
 const localTime = (day, hour, minute, second = 0) => new Date(2026, 10, day, hour, minute, second).toISOString();
-const quotaFixture = (weekly = 63) => ({ ok: true, value: {
+const minute = 60_000;
+const quotaFixture = (weekly = 63, fetchedAt = localTime(22, 13, 40, 9), resetAt = localTime(22, 17, 20)) => ({ ok: true, value: {
   windows: [
     { group: 'Claude and GPT models', label: 'Weekly Limit', remainingPercent: 12, resetAt: localTime(28, 15, 50) },
     { group: 'Gemini Models', label: 'Weekly Limit Remaining', remainingPercent: weekly, resetAt: localTime(28, 15, 50) },
-    { group: 'Gemini Models', label: 'Five Hour Limit Remaining', remainingPercent: 55, resetAt: localTime(22, 17, 20) },
+    { group: 'Gemini Models', label: 'Five Hour Limit Remaining', remainingPercent: 55, resetAt },
   ],
-  credits: { remaining: 0 }, fetchedAt: localTime(22, 13, 40, 9),
+  credits: { remaining: 0 }, fetchedAt,
 } });
 
 test('the single dock entry swaps out the original badge only for Antigravity; unavailable saved route is hidden', () => {
@@ -206,25 +243,23 @@ test('the single dock entry swaps out the original badge only for Antigravity; u
   assert.equal(f.calls.length, 0);
 });
 
-test('Antigravity opens on demand, shares the last result across sessions, and cleans up dismiss handlers', async () => {
+test('Antigravity loads on mount, reuses quota under five minutes, and refreshes stale data on open', async t => {
   const f = activate('zh', Date.parse(localTime(22, 13, 40, 9)));
   f.models.set('one', selected());
   f.models.set('two', selected());
   const render = id => f.renderBadge(f.dock(id ?? 'one'));
   let tree = render();
-  const closed = f.runRenderedEffects();
-  assert.match(dockPill(tree).props['aria-label'], /Google Antigravity · 点击查看用量/);
   assert.equal(dockDialog(tree), undefined);
-  assert.equal(f.calls.length, 0, 'mount makes no RPC');
-  assert.equal(f.timers.length, 0, 'mount starts no timers');
-  closed();
-  render('two');
-  assert.equal(f.calls.length, 0, 'changing sessions makes no RPC');
-  const open = dockPill(render()).props.onClick;
-  open(); open();
-  assert.equal(quotaCalls(f).length, 1, 'double clicks deduplicate');
+  assert.equal(quotaCalls(f).length, 0, 'render itself has no side effects');
+  const unmount = f.mount();
+  t.after(unmount);
+  assert.equal(quotaCalls(f).length, 1, 'visible mount automatically loads quota');
   tree = render();
-  const unmount = f.runRenderedEffects();
+  assert.match(dockPill(tree).props['aria-label'], /正在查询额度/);
+  const open = dockPill(tree).props.onClick;
+  open(); open();
+  assert.equal(quotaCalls(f).length, 1, 'an open on initial load joins the pending check');
+  tree = render();
   assert.equal(dockRefresh(tree).props['aria-disabled'], true);
   assert.ok(nodes(tree).some(n => n.props?.role === 'status' && n.children.includes('正在查询额度…')));
   quotaCalls(f)[0].resolve(quotaFixture());
@@ -237,33 +272,140 @@ test('Antigravity opens on demand, shares the last result across sessions, and c
   assert.equal(dockRefresh(tree).props['aria-disabled'], false);
   f.docEvents.get('keydown')({ key: 'Escape' });
   assert.equal(dockDialog(render()), undefined);
+  assert.deepEqual([...f.docEvents.keys()], ['visibilitychange'], 'closing the panel releases its handlers');
   unmount();
   assert.equal(f.docEvents.size, 0);
+  assert.equal(f.timers.size, 0);
+  f.advance(5 * minute - 1);
+  render('two');
+  t.after(f.mount());
   dockPill(render('two')).props.onClick();
   tree = render('two');
-  const unmountTwo = f.runRenderedEffects();
   assert.equal(quotaCalls(f).length, 1, 'reopening via another session reads cache');
-  assert.equal(f.timers.length, 0, 'opening and rendering cached quota start no timers');
+  assert.match(dockPill(tree).props['aria-label'], /每周剩 63%/);
   f.docEvents.get('pointerdown')({ target: {} });
   assert.equal(dockDialog(render('two')), undefined);
-  unmountTwo();
+  f.advance(2);
+  dockPill(render('two')).props.onClick();
+  assert.equal(quotaCalls(f).length, 2, 'opening after five minutes silently refreshes');
+  assert.match(dockPill(render('two')).props['aria-label'], /每周剩 63%/, 'keeps the previous result during refresh');
+  quotaCalls(f)[1].resolve(quotaFixture(72, new Date(f.now()).toISOString()));
+  await nextTick();
+  assert.match(dockPill(render('two')).props['aria-label'], /每周剩 72%/);
 });
 
-test('after the first query fails, reopening automatically retries and remote sessions hide local quota badge', async () => {
-  const f = activate('zh');
+test('failed automatic checks cool down, manual refresh can retry, and remote sessions hide local quota', async t => {
+  const f = activate('zh', Date.parse(localTime(22, 13, 40, 9)));
   f.models.set('one', selected());
   const render = () => f.renderBadge(f.dock('one'));
+  render();
+  t.after(f.mount());
   dockPill(render()).props.onClick();
   quotaCalls(f)[0].resolve({ ok: false });
   await nextTick();
   assert.ok(nodes(render()).some(n => n.children.includes('暂时查不到 Google 额度，请检查官方 CLI 登录和网络代理后重试。')));
   dockPill(render()).props.onClick();
   dockPill(render()).props.onClick();
-  assert.equal(quotaCalls(f).length, 2);
-  quotaCalls(f)[1].resolve(quotaFixture());
+  f.advance(minute - 1);
+  assert.equal(quotaCalls(f).length, 1, 'reopening during cooldown does not retry');
+  dockRefresh(render()).props.onClick();
+  assert.equal(quotaCalls(f).length, 2, 'manual refresh bypasses cooldown');
+  quotaCalls(f)[1].resolve(quotaFixture(63, new Date(f.now()).toISOString()));
   await nextTick();
+  f.advance(1);
+  assert.equal(quotaCalls(f).length, 2, 'success resets the retry timer');
   f.models.set('dsh-peer:["host-1","session","s1"]', selected());
   assert.equal(f.dock('dsh-peer:["host-1","session","s1"]'), null);
+});
+
+test('visible dock refreshes every ten minutes, pauses in the background and cleans up on hide or route switch', async () => {
+  const f = activate('zh', Date.parse(localTime(22, 13, 40, 9)));
+  f.models.set('one', selected());
+  const render = () => f.renderBadge(f.dock('one'));
+  const resolveLatest = async () => {
+    quotaCalls(f).at(-1).resolve(quotaFixture(63, new Date(f.now()).toISOString()));
+    await nextTick();
+  };
+  f.setVisibility('hidden');
+  render();
+  const unmount = f.mount();
+  assert.equal(quotaCalls(f).length, 0);
+  assert.equal(f.timers.size, 0);
+  f.setVisibility('visible');
+  assert.equal(quotaCalls(f).length, 1);
+  await resolveLatest();
+  assert.equal(f.timers.size, 1);
+  f.advance(10 * minute - 1);
+  assert.equal(quotaCalls(f).length, 1);
+  f.advance(1);
+  assert.equal(quotaCalls(f).length, 2);
+  await resolveLatest();
+  f.setVisibility('hidden');
+  assert.equal(f.timers.size, 0);
+  f.advance(11 * minute);
+  assert.equal(quotaCalls(f).length, 2);
+  f.setVisibility('visible');
+  assert.equal(quotaCalls(f).length, 3, 'returning to the foreground catches up');
+  await resolveLatest();
+  f.setBadgeMode('hidden');
+  assert.equal(render(), null);
+  assert.equal(f.timers.size, 0);
+  assert.equal(f.docEvents.size, 0);
+  f.advance(11 * minute);
+  assert.equal(quotaCalls(f).length, 3);
+  f.setBadgeMode('recent');
+  render();
+  assert.equal(quotaCalls(f).length, 4);
+  f.models.set('one', selected('codex'));
+  assert.equal(f.dock('one').type.name, 'SubscriptionUsageBadge');
+  unmount();
+  await resolveLatest();
+  assert.equal(f.timers.size, 0, 'a late response cannot restart an unmounted timer');
+  assert.equal(f.docEvents.size, 0);
+  f.setVisibility('hidden');
+  f.advance(11 * minute);
+  f.setVisibility('visible');
+  assert.equal(quotaCalls(f).length, 4);
+});
+
+test('a reset triggers one catch-up even if the server keeps reporting a past reset', async t => {
+  const f = activate('zh', Date.parse(localTime(22, 13, 40, 9)));
+  f.models.set('one', selected());
+  const render = () => f.renderBadge(f.dock('one'));
+  render();
+  t.after(f.mount());
+  const resetAt = new Date(f.now() + 2 * minute).toISOString();
+  const resolveLatest = async () => {
+    quotaCalls(f).at(-1).resolve(quotaFixture(63, new Date(f.now()).toISOString(), resetAt));
+    await nextTick();
+  };
+  await resolveLatest();
+  f.advance(2 * minute - 1);
+  assert.equal(quotaCalls(f).length, 1);
+  f.advance(1);
+  assert.equal(quotaCalls(f).length, 2, 'refreshes at reset without waiting ten minutes');
+  await resolveLatest();
+  f.advance(2 * minute);
+  dockPill(render()).props.onClick();
+  assert.equal(quotaCalls(f).length, 2, 'old reset does not trigger another refresh on open');
+  f.advance(8 * minute - 1);
+  assert.equal(quotaCalls(f).length, 2, 'old reset does not trigger another timer');
+  f.advance(1);
+  assert.equal(quotaCalls(f).length, 3, 'normal ten-minute cadence resumes');
+});
+
+test('returning to the foreground catches a reset while the cached quota is still young', async t => {
+  const f = activate('zh', Date.parse(localTime(22, 13, 40, 9)));
+  f.models.set('one', selected());
+  f.renderBadge(f.dock('one'));
+  t.after(f.mount());
+  quotaCalls(f)[0].resolve(quotaFixture(63, new Date(f.now()).toISOString(), new Date(f.now() + minute).toISOString()));
+  await nextTick();
+  f.setVisibility('hidden');
+  f.advance(minute);
+  assert.equal(quotaCalls(f).length, 1);
+  f.setVisibility('visible');
+  assert.equal(quotaCalls(f).length, 2);
 });
 
 test('settings and dock share quota, one in-flight refresh, and reset invalidates stale replies', async t => {
@@ -275,16 +417,18 @@ test('settings and dock share quota, one in-flight refresh, and reset invalidate
   agyCalls(f)[0].resolve(available('ready'));
   await nextTick();
   const page = () => nodes(f.render());
-  const settingsButton = text => page().find(n => n.type === 'button' && n.children.includes(text));
   const dock = () => f.renderBadge(f.dock('one'));
   page().find(n => n.props?.id?.endsWith('-manage')).props.onClick();
-  settingsButton('查看额度').props.onClick();
-  dockPill(dock()).props.onClick();
+  page();
+  assert.equal(quotaCalls(f).length, 1, 'expanding Manage automatically starts a query');
+  const shownDock = dock();
+  t.after(f.mount());
+  dockPill(shownDock).props.onClick();
   assert.equal(quotaCalls(f).length, 1, 'settings and composer join the same request');
   quotaCalls(f)[0].resolve(quotaFixture());
   await nextTick();
   assert.match(dockPill(dock()).props['aria-label'], /每周剩 63%/);
-  assert.ok(settingsButton('刷新额度'));
+  assert.ok(page().some(n => n.type === 'button' && n.children.includes('刷新额度')));
   dockRefresh(dock()).props.onClick();
   assert.equal(quotaCalls(f).length, 2);
   assert.ok(page().some(n => n.props?.['aria-valuenow'] === 63));
@@ -304,7 +448,7 @@ test('settings and dock share quota, one in-flight refresh, and reset invalidate
   await nextTick();
   assert.match(dockPill(dock()).props['aria-label'], /点击查看用量/);
   assert.equal(page().some(n => n.props?.role === 'progressbar'), false);
-  assert.equal(quotaCalls(f).length, 4, 'reset does not refetch');
+  assert.equal(quotaCalls(f).length, 4, 'clearing the connection aborts and ignores the old result');
 });
 
 test('the shipped Client merges Google Antigravity into the single native Models footer and retains chat add-ons', () => {
@@ -323,8 +467,6 @@ test('the shipped Client merges Google Antigravity into the single native Models
   assert.match(copy.zh['signed-out'], /官方 Antigravity CLI/);
   assert.equal(copy.zh.login, '登录');
   assert.equal(copy.zh.logout, '退出登录');
-  assert.equal(copy.zh.openQuota, '查看额度');
-  assert.equal(copy.en.openQuota, 'Check quota');
   assert.equal(copy.zh.refreshQuota, '刷新额度');
   assert.equal(copy.en.refreshQuota, 'Refresh quota');
   for (const dictionary of [copy.zh, copy.en]) assert.equal(Object.hasOwn(dictionary, 'permissionHint'), false);
@@ -383,8 +525,8 @@ test('Google Antigravity appears in outer connected list when ready and inside A
   assert.equal(signal.aborted, true);
 });
 
-test('Check quota is a connected Manage action and never replaces availability on success or failure', async t => {
-  const f = activate();
+test('connected Manage auto-checks on expand, caches for five minutes, and supports manual refresh', async t => {
+  const f = activate(undefined, Date.parse(localTime(22, 13, 40, 9)));
   f.render();
   t.after(f.mount());
   await nextTick();
@@ -393,39 +535,45 @@ test('Check quota is a connected Manage action and never replaces availability o
   const row = () => nodes(f.render()).find(n => n.props?.['data-subscription-provider'] === 'antigravity');
   const button = (tree, label) => nodes(tree).find(n => n.type === 'button' && n.children.includes(label));
   const feedback = (tree, role, key) => nodes(tree).some(n => n.type === 'p' && n.props.role === role && n.children.includes(key));
-  assert.equal(button(row(), 'openQuota'), undefined);
-  nodes(row()).find(n => n.props?.id?.endsWith('-manage')).props.onClick();
-  let view = row();
-  const body = nodes(view).find(n => n.props?.className === 'dsh-enhanced-subscription-body');
-  const openQuota = button(body, 'openQuota');
-  assert.equal(agyCalls(f).length, 1, 'opening Manage does not query quota');
-  assert.equal(openQuota.props['aria-disabled'], false);
-  openQuota.props.onClick();
-  openQuota.props.onClick();
-  assert.equal(agyCalls(f).length, 2, 'only one query while busy');
+  const toggleManage = () => nodes(row()).find(n => n.props?.id?.endsWith('-manage')).props.onClick();
+  assert.equal(button(row(), 'refreshQuota'), undefined);
+  assert.equal(quotaCalls(f).length, 0, 'the collapsed card does not query quota');
+  toggleManage();
+  row();
+  assert.equal(quotaCalls(f).length, 1);
   assert.equal(JSON.stringify(agyCalls(f)[1].args.slice(0, 3)), JSON.stringify(['/api', endpoint, { action: 'quota' }]));
-  const pending = button(row(), 'openQuota');
+  const pending = button(row(), 'refreshQuota');
   assert.equal(pending.props['aria-disabled'], true);
   assert.ok(feedback(row(), 'status', 'openingQuota'));
   assert.ok(nodes(row()).some(n => n.props?.id?.endsWith('-manage')), 'query leaves the disclosure available');
   agyCalls(f)[1].resolve({ ok: true, value: {
     windows: [{ group: 'Gemini', label: 'Weekly', remainingPercent: 63, resetAt: '2026-11-28T15:02:14Z' }],
-    credits: { remaining: 0, upgradeUrl: 'https://antigravity.google/g1-upgrade' }, fetchedAt: '2026-11-22T00:00:00Z',
+    credits: { remaining: 0, upgradeUrl: 'https://antigravity.google/g1-upgrade' }, fetchedAt: new Date(f.now()).toISOString(),
   } });
   await nextTick();
-  view = row();
+  let view = row();
   assert.ok(nodes(view).some(n => n.props?.role === 'progressbar' && n.props['aria-valuenow'] === 63));
   assert.ok(feedback(view, 'status', 'quotaUpdated'));
   assert.ok(nodes(view).some(n => n.type === 'small' && n.children.includes('quotaCredits') && n.children.includes(0)));
   assert.ok(nodes(view).some(n => n.props?.['data-state'] === 'connected' && n.children.includes('readyShort')));
-  assert.equal(agyCalls(f).length, 2, 'quota never rechecks connection status or auto-refreshes');
+  assert.equal(agyCalls(f).length, 2, 'quota does not recheck connection status');
+  toggleManage(); row();
+  f.advance(5 * minute - 1);
+  toggleManage(); row();
+  assert.equal(quotaCalls(f).length, 1, 'fresh cache is reused');
+  toggleManage(); row();
+  f.advance(1);
+  toggleManage(); row();
+  assert.equal(quotaCalls(f).length, 2, 'expired cache triggers a new check');
+  quotaCalls(f)[1].resolve(quotaFixture(63, new Date(f.now()).toISOString()));
+  await nextTick();
 
-  button(view, 'refreshQuota').props.onClick();
+  button(row(), 'refreshQuota').props.onClick();
   const refreshing = row();
   assert.ok(feedback(refreshing, 'status', 'openingQuota'));
   assert.ok(nodes(refreshing).some(n => n.props?.role === 'progressbar' && n.props['aria-valuenow'] === 63), 'keep the last result visible during refresh');
   assert.equal(button(refreshing, 'refreshQuota').props['aria-disabled'], true);
-  agyCalls(f)[2].resolve({ ok: false, error: { code: 'AGY_QUOTA_FAILED', message: 'synthetic' } });
+  quotaCalls(f)[2].resolve({ ok: false, error: { code: 'AGY_QUOTA_FAILED', message: 'synthetic' } });
   await nextTick();
   view = row();
   assert.ok(feedback(view, 'status', 'quotaStale'));
@@ -445,7 +593,7 @@ test('quota groups, cycle names, local time and threshold colors render in both 
     await nextTick();
     const page = () => nodes(f.render());
     page().find(n => n.props?.id?.endsWith('-manage')).props.onClick();
-    page().find(n => n.type === 'button' && n.children.includes(lang === 'zh' ? '查看额度' : 'Check quota')).props.onClick();
+    page(); // Commit the expanded card and its quota check.
     agyCalls(f)[1].resolve({ ok: true, value: { windows: [
       { group: 'Claude and GPT models', label: 'Weekly Limit Remaining', remainingPercent: 30, resetAt: at(28, 23, 2) },
       { group: 'Gemini Models', label: 'Five Hour Limit Remaining', remainingPercent: 55, resetAt: at(22, 16, 53) },
@@ -489,7 +637,7 @@ test('expanding Add subscription account replaces the dashed button with a nativ
   assert.ok(addCard, 'native addCard container renders in place');
   const googleRow = nodes(addCard).find(n => n.props?.['data-subscription-provider'] === 'antigravity');
   assert.ok(googleRow, 'signed-out Google Antigravity appears inside the Add card');
-  assert.equal(nodes(googleRow).some(n => n.type === 'button' && n.children.includes('openQuota')), false);
+  assert.equal(nodes(googleRow).some(n => n.type === 'button' && n.children.includes('refreshQuota')), false);
 
   // Click Login inside signed-out Google row triggers { action: "login" }
   const loginBtn = nodes(googleRow).find(n => n.type === 'button' && n.children.includes('login'));

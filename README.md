@@ -14,7 +14,7 @@
 
 插件默认从 `%LOCALAPPDATA%\agy\bin\agy.exe` 找 CLI；用[官方 CLI](https://antigravity.google/docs/getting-started?tab=cli)登录，不需要 Google API Key。登录之后回到 **设置 → 模型 → Google Antigravity 接入状态**，点「重新检查」。Gemini 新消息从本机 DSH 聊天框提交，不开放远程或无人值守调用。
 
-已连接并选用 Google Antigravity 时，点击**聊天输入框下方的订阅用量胶囊**，即可查看各模型组的剩余百分比、本地重置时间和 G1 Credits 余额。首次打开才查询，再打开直接显示缓存，需更新时点「刷新」。**设置 → 模型 → Google Antigravity → 管理**也会显示同一份结果。查询只在用户操作时通过官方 `agy --print` 执行，不弹终端、不后台轮询。
+从 `0.4.15` 起，选用 Google Antigravity 时，**聊天输入框下方的订阅用量胶囊**会自动加载额度；胶囊可见且页面在前台时，每 10 分钟或跨过额度重置时间自动刷新。打开用量弹窗或展开 **设置 → 模型 → Google Antigravity → 管理**时，共享 5 分钟内且未跨重置时间的缓存，过期则自动刷新。仍可手动刷新，多个窗口同时查询会合并为一次，不弹终端。
 
 可以在插件的 `google` 配置里覆盖 `executable`、`dataDir` 和 `agentsFile`（为空则不加载全局规则）。`proxy` 默认 `auto`：先用已启用的订阅代理，再看代理环境变量，最后走 Windows 当前用户的系统代理；可填明确的代理地址，填 `direct` 或空字符串则直连。订阅代理支持 SOCKS5 和 SOCKS5h。省略 `mcp` 时自动发现；可填写服务器名限定范围（`remote` 也包含原生 Remote 工具），`[]` 不转接这些工具。原生子代理工具是否可用由当前 DSH 预设决定，不受此 MCP 服务器名单影响。
 
