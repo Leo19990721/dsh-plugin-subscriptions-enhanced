@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { projectToolSchema } from '@deepseek-ai/dsh-tools';
 import { executeToolBatch, ToolExecutionPipeline } from '@deepseek-ai/dsh-tools/pipeline';
@@ -37,14 +37,14 @@ const wireTool = tool => {
 const gatewayTool = (name, description, properties, required = []) => ({
   name, description, inputSchema: { type: 'object', properties, required, additionalProperties: false }, _meta: eager,
 });
-const gatewayTools = [
+const gatewayTools = prefix => [
   gatewayTool(CATALOG_TOOL, 'Find available DeepSeek Harness tools (including Playwright, image generation and subagents). '
     + 'Use name for the exact original input schema, or search for a capability and use nextOffset to continue.', {
     name: { type: 'string', description: 'Exact DSH tool name for its full input schema' },
     search: { type: 'string', description: 'Case-insensitive text in tool names or descriptions' },
     offset: { type: 'integer', description: 'Next offset from a previous search; omit on the first page' },
   }),
-  gatewayTool(CALL_TOOL, 'Run one exact DSH tool. Get its input schema with mcp_dsh_tool_catalog first if needed. '
+  gatewayTool(CALL_TOOL, `Run one exact DSH tool. Get its input schema with ${prefix}${CATALOG_TOOL} first if needed. `
     + 'Uses the current DSH turn’s permissions and approvals.', {
     name: { type: 'string', description: 'Exact DSH tool name from the catalog (not an MCP function alias)' },
     arguments_json: { type: 'string', description: 'JSON-encoded arguments object; use {} for a tool without arguments' },
@@ -56,7 +56,7 @@ export const agyMcpDeclarations = tools => [...tools.values()].filter(tool => di
   .sort((a, b) => a.name < b.name ? -1 : a.name === b.name ? 0 : 1)
   .map(tool => ({ ...wireTool(tool), _meta: eager }));
 
-function catalogResponse(tools, args) {
+function catalogResponse(tools, args, prefix) {
   if (!objectValue(args)) return;
   if (Object.hasOwn(args, 'name')) {
     const tool = typeof args.name === 'string' && tools.find(tool => tool.name === args.name);
@@ -69,7 +69,7 @@ function catalogResponse(tools, args) {
     .sort((a, b) => a.name < b.name ? -1 : a.name === b.name ? 0 : 1);
   const page = matches.slice(offset, offset + CATALOG_PAGE).map(({ name, description }) => ({
     name, description: description?.replace(/\s+/gu, ' ').slice(0, 160),
-    ...(directTool(name) ? { direct: `mcp_dsh_${name}` } : {}),
+    ...(directTool(name) ? { direct: `${prefix}${name}` } : {}),
   }));
   return { tools: page, ...(offset + CATALOG_PAGE < matches.length ? { nextOffset: offset + CATALOG_PAGE } : {}) };
 }
@@ -116,7 +116,13 @@ export async function openAgyMcp(ctx, { waitMs = 5000, declarations = [] } = {})
   // Publish a schema-only snapshot, even when the CLI refreshes while idle.
   // Never let a transiently removed registration poison its declaration cache;
   // the separate request lease still rechecks every lookup and execution.
-  const declarationPayload = JSON.stringify([...gatewayTools, ...declarations]);
+  // ACP reports the generated function name, not a server ID or its transport.
+  // A private server namespace keeps an external static alias from overlapping it.
+  const serverName = `dsh${randomBytes(12).toString('hex')}`;
+  const prefix = `mcp_${serverName}_`;
+  const published = [...gatewayTools(prefix), ...declarations];
+  const declarationPayload = JSON.stringify(published);
+  const namesByAlias = new Map(published.map(({ name }) => [`${prefix}${name}`, name]));
   const token = randomUUID();
   let pipeline;
   const getPipeline = () => (pipeline ??= new ToolExecutionPipeline(ctx));
@@ -128,8 +134,12 @@ export async function openAgyMcp(ctx, { waitMs = 5000, declarations = [] } = {})
     if (origin === wave) origin.mcpCount(total);
     else if (origin === active && !wave) origin.onMcpCount?.(total);
   };
-  const listedTools = turn => [...(turn?.tools?.values() ?? [])].filter(tool =>
-    ctx.tools?.executable(tool.name, turn.agent, turn.toolSet) === tool);
+  const executable = (turn, name) => {
+    const tool = turn.tools?.get(name);
+    return Boolean(tool && ctx.tools?.executable(name, turn.agent, turn.toolSet) === tool);
+  };
+  const leased = turn => Boolean(turn && turn === active && !turn.signal.aborted && turn.canCall());
+  const listedTools = turn => [...turn.tools.values()].filter(tool => executable(turn, tool.name));
   const release = turn => { for (const resolve of waiters) resolve(turn); };
   function forgetWave() {
     if (!wave) return;
@@ -188,9 +198,9 @@ export async function openAgyMcp(ctx, { waitMs = 5000, declarations = [] } = {})
       if (origin === wave) { count(origin, 1); counted = true; }
       const turn = active ?? (wave && await waitForTurn(res));
       let { name, arguments: args = {} } = rpc.params ?? {};
-      if (res.destroyed || origin !== (wave ?? active) || !turn || turn !== active || turn.signal.aborted || !turn.canCall()) return fail(-32602, 'Tool unavailable in this DSH turn');
+      if (res.destroyed || origin !== (wave ?? active) || !leased(turn)) return fail(-32602, 'Tool unavailable in this DSH turn');
       if (name === CATALOG_TOOL) {
-        const found = catalogResponse(listedTools(turn), args);
+        const found = catalogResponse(listedTools(turn), args, prefix);
         return found ? reply({ content: [{ type: 'text', text: JSON.stringify(found) }], isError: false })
           : fail(-32602, 'Invalid discovery request or tool unavailable in this DSH turn');
       }
@@ -205,8 +215,7 @@ export async function openAgyMcp(ctx, { waitMs = 5000, declarations = [] } = {})
       res.on('close', () => disconnect.abort());
       const callSignal = AbortSignal.any([turn.signal, disconnect.signal]);
 
-      if (!turn.tools?.has(name)
-        || ctx.tools?.executable(name, turn.agent, turn.toolSet) !== turn.tools.get(name)) return fail(-32602, 'Tool unavailable in this DSH turn');
+      if (!executable(turn, name)) return fail(-32602, 'Tool unavailable in this DSH turn');
       if (!counted) { count(origin, 1); counted = true; }
       const { results } = await executeToolBatch({ agent: turn.agent, signal: callSignal,
         calls: [{ type: 'tool-call', id: randomUUID(), name, arguments: JSON.stringify(args) }], toolSet: turn.toolSet,
@@ -223,8 +232,15 @@ export async function openAgyMcp(ctx, { waitMs = 5000, declarations = [] } = {})
   });
   server.unref();
   return {
-    servers: [{ type: 'http', name: 'dsh', url: `http://127.0.0.1:${server.address().port}/mcp`,
+    servers: [{ type: 'http', name: serverName, url: `http://127.0.0.1:${server.address().port}/mcp`,
       headers: [{ name: 'Authorization', value: `Bearer ${token}` }] }],
+    permitsAcpTool(toolCall) {
+      const name = namesByAlias.get(toolCall.name);
+      const turn = active;
+      if (!name || !leased(turn)) return false;
+      if (name === CATALOG_TOOL) return true;
+      return executable(turn, name === CALL_TOOL ? toolCall.rawInput?.name : name) && leased(turn);
+    },
     beginWave(value) {
       forgetWave(); active = undefined; wave = value;
       wave.mcpCount(inFlight.get(wave) ?? 0);

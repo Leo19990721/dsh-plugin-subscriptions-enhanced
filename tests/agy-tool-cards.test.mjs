@@ -55,6 +55,13 @@ test('on-demand calls retain the original tool identity without logging their ar
   assert.doesNotMatch(JSON.stringify(snapshot), /secret|do not retain/);
   const invalid = summarizeAgyTool({ toolCallId: 'x', title: 'Run mcp_dsh_tool_call', rawInput: { name: 'foo\nsubagent' } });
   assert.equal(invalid.title, undefined);
+  const bridgeName = 'dsh0123456789abcdef01234567';
+  const alias = `mcp_${bridgeName}_tool_call`;
+  assert.deepEqual(summarizeAgyTool({ toolCallId: 'x', title: `Run ${alias}`, name: alias, kind: 'other', rawInput }, bridgeName), snapshot);
+  const direct = summarizeAgyTool({ toolCallId: 'x', title: `Run mcp_${bridgeName}_subagent`, kind: 'other' }, bridgeName);
+  assert.equal(direct.title, 'Run mcp_dsh_subagent');
+  assert.equal(direct.category, 'subagent');
+  assert.equal(direct.nativePanel, true);
   let latest;
   const p = agyProgress(0, { displayTool(_id, data) { latest = data; return true; } });
   p.push(call('x', { title: 'Run mcp_dsh_tool_call', rawInput: { name: 'ask_user_question', arguments_json: '{"sensitive":true}' }, status: 'in_progress' }));

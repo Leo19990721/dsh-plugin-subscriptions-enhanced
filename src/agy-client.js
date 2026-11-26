@@ -13,7 +13,6 @@ const agyCopy = {
     'missing-cliShort': '未安装 CLI',
     unavailable: '无法连接 Google Antigravity，请检查本机代理后重试。',
     unavailableShort: '连接失败',
-    permissionHint: '「工作区内」只允许修改工作区文件；「只读」禁止修改文件。DSH MCP 工具沿用各自的原生权限和审批。需要 Gemini 直接执行终端命令时，请切到「完全权限 + 需确认」或「完全权限」。',
     retry: '重新检查',
     openQuota: '查看额度',
     refreshQuota: '刷新额度',
@@ -63,7 +62,6 @@ const agyCopy = {
     'missing-cliShort': 'CLI not found',
     unavailable: 'Could not connect to Google Antigravity. Check your local proxy and try again.',
     unavailableShort: 'Unavailable',
-    permissionHint: 'Workspace mode limits edits to the workspace; read-only mode blocks file edits. DSH MCP tools keep their own permissions and approvals. To run terminal commands directly in Gemini, choose Full Access with approval or Full Access.',
     retry: 'Check again',
     openQuota: 'Check quota',
     refreshQuota: 'Refresh quota',
@@ -414,7 +412,6 @@ function EnhancedGoogleRow({ sectionId, state, open, toggle, t, agyT }) {
   errorText && h('p', { role: 'alert', style: { ...styles$5.errorLine, overflowWrap: 'anywhere' } }, errorText),
   expanded && h('div', { id: `${titleId}-body`, className: 'dsh-enhanced-subscription-body' },
     h('p', { role: status === 'unavailable' ? 'alert' : 'status', style: styles$5.statusLine }, detailText),
-    connected && h('p', { style: styles$5.statusLine }, agyT('permissionHint')),
     h('div', { style: styles$5.actions },
       status === 'signed-out' && !busy && h('button', {
         type: 'button',

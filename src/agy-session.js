@@ -272,7 +272,7 @@ export class AgySession {
       const status = TOOL_STATUSES.has(update.status) ? update.status : previous?.status ?? 'pending';
       this.#tools.set(id, { title: title || 'Antigravity', status });
       if (turn.onTool && turn.toolUpdates < AGY_TOOL_UPDATES && turn.toolBytes < AGY_TOOL_BYTES) {
-        const preview = summarizeAgyTool(update);
+        const preview = summarizeAgyTool(update, this.#mcpServers[0]?.name);
         if (preview && (turn.toolBytes += agyToolSize(preview)) <= AGY_TOOL_BYTES) {
           turn.toolUpdates++;
           turn.onTool({ ...preview, sessionUpdate: update.sessionUpdate });

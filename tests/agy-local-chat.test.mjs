@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { mountLocalGoogle } from '../src/agy-local-host.js';
+import { agyLocalPermission, mountLocalGoogle } from '../src/agy-local-host.js';
+import { openAgyMcp } from '../src/agy-local-mcp.js';
 import { Config } from '../lib/index.js';
 import { apply as applyGoogle } from '../lib/agy-local-plugin.js';
 import * as writing from '../src/writing-host.js';
@@ -343,7 +344,9 @@ test('workspace context changes reopen the same official conversation on the nex
 for (const mode of ['workspace-write', 'read-only']) {
   test(`${mode} bridges custom MCP through the native tool guard`, async t => {
     const prompt = Promise.withResolvers();
-    const h = await fixture(t, { localPermissions: { mode, approval: 'never' }, localMcpMarker: 'DSH allowed this tool',
+    const replies = new Map();
+    const h = await fixture(t, { localPermissions: { mode, approval: 'ask', request() { assert.fail('ACP must not bypass or duplicate the DSH tool pipeline'); } },
+      localMcpMarker: 'DSH allowed this tool', apis: { onPermissionReply(id, result) { replies.get(id)?.resolve(result); } },
       acpPrompt(turn) { prompt.resolve(turn); } });
     const remove = h.ctx.tools.guard(exec => exec.name === 'mcp__custom-server__fixture' ? 'synthetic native restriction' : undefined);
     t.after(remove);
@@ -351,7 +354,48 @@ for (const mode of ['workspace-write', 'read-only']) {
     ok(await h.select(id, selection));
     ok(await h.prompt(id, 'synthetic MCP checks'));
     const turn = await prompt.promise;
-    const server = h.acpCalls.findLast(row => row.method === 'session/new').params.mcpServers[0];
+    const server = turn.mcpServers[0];
+    const prefix = `mcp_${server.name}_`;
+    assert.match(server.name, /^dsh[0-9a-f]{24}$/u);
+    let sequence = 0;
+    const ask = (call, options) => {
+      const id = `permission-${++sequence}`;
+      const reply = Promise.withResolvers();
+      replies.set(id, reply);
+      turn.ask(id, { toolCallId: `tool-${sequence}`, sessionUpdate: 'tool_call', kind: 'other', status: 'pending', ...call }, options);
+      return reply.promise.then(({ outcome }) => outcome.optionId ?? outcome.outcome);
+    };
+    const catalog = `${prefix}tool_catalog`;
+    const invokeName = `${prefix}tool_call`;
+    const idle = await openAgyMcp(h.ctx);
+    try {
+      assert.notEqual(idle.servers[0].name, server.name);
+      assert.equal(await ask({ name: `mcp_${idle.servers[0].name}_tool_catalog` }), 'deny');
+      const agent = h.agent(id);
+      const params = { toolCall: { toolCallId: 'idle-tool', name: `mcp_${idle.servers[0].name}_tool_catalog`, kind: 'other' },
+        options: [{ kind: 'allow_once', optionId: 'allow' }, { kind: 'reject_once', optionId: 'deny' }] };
+      const check = () => agyLocalPermission(h.ctx, agent, params, t.signal, [], idle).then(({ outcome }) => outcome.optionId);
+      assert.equal(await check(), 'deny');
+      const lease = new AbortController();
+      const idleTurn = { agent, tools: new Map(), signal: lease.signal, canCall: () => true };
+      idle.setTurn(idleTurn);
+      assert.equal(await check(), 'allow');
+      lease.abort();
+      assert.equal(await check(), 'deny');
+      idle.clearTurn(idleTurn);
+      assert.equal(await check(), 'deny');
+    } finally { await idle.close(); }
+    assert.equal(await ask({ name: catalog }), 'allow');
+    assert.equal(await ask({ name: invokeName, rawInput: { name: 'mcp__knowledge__dsh_integration_marker', arguments_json: '{}' } }), 'allow');
+    assert.equal(await ask({ name: 'mcp_dsh_tool_catalog', title: `Run ${catalog}`, rawInput: { name: catalog } }), 'deny');
+    assert.equal(await ask({ title: `Run ${catalog}` }), 'deny');
+    assert.equal(await ask({ name: `${prefix}undeclared` }), 'deny');
+    assert.equal(await ask({ name: invokeName, rawInput: { name: 'unregistered_tool', arguments_json: '{}' } }), 'deny');
+    assert.equal(await ask({ name: catalog, kind: 'execute' }), 'deny');
+    for (const kind of ['edit', 'delete']) {
+      assert.equal(await ask({ kind, locations: [{ path: '../outside.txt' }] }), 'deny');
+    }
+    assert.equal(await ask({ name: catalog }, [{ kind: 'allow_always', optionId: 'always' }, { kind: 'reject_once', optionId: 'deny' }]), 'deny');
     const rpc = async (method, params) => (await fetch(server.url, { method: 'POST', signal: t.signal,
       headers: { authorization: server.headers[0].value }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })).json();
     const { result } = await rpc('tools/list');

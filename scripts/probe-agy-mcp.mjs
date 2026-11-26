@@ -11,8 +11,8 @@ import { agyWindowsEnv, discoverAgyExecutable } from '../lib/agy-launch.js';
 import { createLocalAgy } from '../lib/agy-local-runtime.js';
 
 await import('./runtime-hook.mjs');
-const [{ agyMcpDeclarations, agyMcpTools, openAgyMcp }, { Context }, { ToolsService, projectToolSchema }, { SystemPrompt }] = await Promise.all([
-  import('../lib/agy-local-mcp.js'), import('@deepseek-ai/cordis'), import('@deepseek-ai/dsh-tools'), import('@deepseek-ai/dsh-system-prompt'),
+const [{ agyLocalPermission }, { agyMcpDeclarations, agyMcpTools, openAgyMcp }, { Context }, { ToolsService, projectToolSchema }, { SystemPrompt }] = await Promise.all([
+  import('../lib/agy-local-host.js'), import('../lib/agy-local-mcp.js'), import('@deepseek-ai/cordis'), import('@deepseek-ai/dsh-tools'), import('@deepseek-ai/dsh-system-prompt'),
 ]);
 
 const executable = await discoverAgyExecutable(process.argv.slice(2).find(arg => arg !== '--debug'));
@@ -40,6 +40,7 @@ const playwright = makeTool(browser, 'Synthetic Playwright accessibility snapsho
 const before = [...ordinary, ...core.map(tool => ({ ...tool, description: 'Synthetic ' + 'a'.repeat(2600) })), playwright]
   .map(tool => { const { name, description, parameters: inputSchema } = projectToolSchema(tool, false); return { name, description, inputSchema }; });
 const later = [];
+let bridgePrefix;
 const responseFor = (res, parts, finishReason = 'STOP') => res.writeHead(200, { 'content-type': 'text/event-stream' })
   .end(`data: ${JSON.stringify({ candidates: [{ content: { role: 'model', parts }, finishReason }] })}\n\n`);
 const server = createServer(async (req, res) => {
@@ -63,13 +64,13 @@ const server = createServer(async (req, res) => {
     // synthetic calls, not arbitrary system text or HTTP headers.
     const names = declarations.map(tool => tool.name);
     const functions = (input.contents ?? []).flatMap(content => content.parts ?? []).flatMap(part => part.functionResponse ? [part.functionResponse] : []);
-    const iteration = later.filter(row => row.mode === simulate.mode).length;
+    const iteration = later.filter(row => row.run === simulate).length;
     let next;
-    if (simulate.mode === 'fallback' && iteration === 0) next = { name: 'mcp_dsh_tool_catalog', args: { name: browser } };
-    if (simulate.mode === 'fallback' && iteration === 1) next = { name: 'mcp_dsh_tool_call', args: { name: browser, arguments_json: '{"value":"from ACP"}' } };
-    if (simulate.mode === 'reloaded' && iteration === 0) next = { name: 'mcp_dsh_tool_catalog', args: { search: 'Playwright' } };
-    if (simulate.mode === 'direct' && iteration === 0) next = { name: 'mcp_dsh_image_generate', args: { value: 'direct ACP' } };
-    later.push({ names, functions, mode: simulate.mode });
+    if (simulate.mode === 'fallback' && iteration === 0) next = { name: `${bridgePrefix}tool_catalog`, args: { name: browser } };
+    if (simulate.mode === 'fallback' && iteration === 1) next = { name: `${bridgePrefix}tool_call`, args: { name: browser, arguments_json: '{"value":"from ACP"}' } };
+    if (simulate.mode === 'reloaded' && iteration === 0) next = { name: `${bridgePrefix}tool_catalog`, args: { search: 'Playwright' } };
+    if (simulate.mode === 'direct' && iteration === 0) next = { name: `${bridgePrefix}image_generate`, args: { value: 'direct ACP' } };
+    later.push({ names, functions, run: simulate });
     if (!next || !names.includes(next.name)) return responseFor(res, [{ text: 'Synthetic model completed' }]);
     const declaration = declarations.find(tool => tool.name === next.name);
     if ((declaration.parametersJsonSchema ?? declaration.parameters)?.properties?.toolSummary) next.args.toolSummary = 'Synthetic loopback probe';
@@ -107,8 +108,6 @@ try {
   const legacyEnv = isolated(agyWindowsEnv(legacyAreas));
   const settings = await configure(legacyEnv);
   const authDenied = () => ({ outcome: { outcome: 'cancelled' } });
-  let unexpectedApprovals = 0;
-  const declineUnexpected = () => { unexpectedApprovals++; return authDenied(); };
   const legacy = new AgyAcpClient({ executable, cwd, env: legacyEnv, timeoutMs: 20_000, allowMcpServers: true, onPermission: authDenied });
   let version, baseline;
   try {
@@ -116,7 +115,7 @@ try {
     version = (await legacy.start()).agentInfo.version;
     const { sessionId } = await legacy.request('session/new', { cwd, mcpServers: [{ name: 'dsh', type: 'http', url: `${base}/legacy`, headers: [] }] });
     assert.equal((await legacy.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Synthetic legacy ACP probe' }] })).stopReason, 'end_turn');
-    baseline = later.find(row => row.mode === 'legacy').names;
+    baseline = later.find(row => row.run === simulate).names;
   } finally { await legacy.close(); }
   const cached = (await readdir(join(settings, 'mcp', 'dsh'))).filter(name => name.endsWith('.json')).length;
   assert.equal(cached, before.length);
@@ -138,32 +137,50 @@ try {
     },
   });
   const modelSelection = { provider: 'antigravity', model: 'synthetic' };
-  async function turns(officialId, modes) {
+  async function turns(permissionMode, officialId, modes) {
     const toolSet = await ctx.tools.resolve({ modelSelection, signal: controller.signal });
     const tools = agyMcpTools(ctx, undefined, toolSet, ['*'], true);
     bridge = await openAgyMcp(ctx, { declarations: agyMcpDeclarations(tools) });
-    let session;
+    bridgePrefix = `mcp_${bridge.servers[0].name}_`;
+    const services = new Map([
+      ['sandboxPolicy', { resolve: () => ({ mode: permissionMode, workspaceRoot: cwd }) }],
+      ['approval', { overrideOf() {}, config: { policy: 'ask' }, request: () => assert.fail('ACP must not duplicate native DSH approval') }],
+    ]);
+    const agent = { session: { header: { cwd } }, ctx: { get: key => services.get(key) } };
+    let session, wireOpen = false;
+    const permissions = [];
     try {
-      session = await runtime.open(controller.signal, { id: 'same-local-session', cwd, mode: 'full', officialId,
-        mcpServers: bridge.servers, nativeSubagents: true, nativeQuestions: true, onPermission: declineUnexpected });
-      let wireOpen = false;
-      const mcpTurn = { tools, toolSet, signal: controller.signal, canCall: () => wireOpen };
+      session = await runtime.open(controller.signal, { id: `local-session-${permissionMode}`, cwd, mode: permissionMode, officialId,
+        mcpServers: bridge.servers, nativeSubagents: true, nativeQuestions: true,
+        async onPermission(params, signal) {
+          const { toolCall, options } = params;
+          const decision = await agyLocalPermission(ctx, agent, params, signal, [], bridge);
+          permissions.push({ name: toolCall.name, kind: toolCall.kind, decision: options.find(option => option.optionId === decision.outcome.optionId)?.kind });
+          return decision;
+        },
+      });
       const cards = [];
       for (const mode of modes) {
         simulate = { mode };
         const beforeTurn = later.length;
+        const lease = new AbortController();
+        const mcpTurn = { tools, toolSet, signal: AbortSignal.any([controller.signal, lease.signal]), canCall: () => wireOpen };
         bridge.setTurn(mcpTurn);
+        const beforePermissions = permissions.length;
         await session.prepare({ model: session.options.model.currentValue }, controller.signal);
         const result = await session.runTurn([{ type: 'text', text: `Synthetic ${mode} probe` }], { signal: controller.signal,
-          onDelta() {}, onDispatch() { wireOpen = true; }, onTerminal() { wireOpen = false; bridge.clearTurn(mcpTurn); },
+          onDelta() {}, onDispatch() { wireOpen = true; }, onTerminal() { wireOpen = false; lease.abort(); bridge.clearTurn(mcpTurn); },
           onTool(update) { cards.push(update); } });
         if (simulate.error) throw simulate.error;
         assert.equal(result.stopReason, 'end_turn');
         const requests = later.slice(beforeTurn);
-        const names = requests[0].names.filter(name => name.startsWith('mcp_dsh_'));
-        console.log(`${mode}: ${names.length} model declarations (${names.join(', ')}), ${requests.length} model requests`);
-        assert.ok(['tool_call', 'tool_catalog', 'subagent', 'ask_user_question'].every(name => names.includes(`mcp_dsh_${name}`)));
-        assert.equal(names.includes('mcp_dsh_image_generate'), permitImage);
+        const names = requests[0].names.filter(name => name.startsWith(bridgePrefix)).map(name => name.slice(bridgePrefix.length));
+        if (!names.length) console.log('probe namespace:', bridgePrefix, requests[0].names);
+        const expectedPermissions = mode === 'direct' ? ['image_generate'] : mode === 'fallback' ? ['tool_catalog', 'tool_call'] : ['tool_catalog'];
+        assert.deepEqual(permissions.slice(beforePermissions), expectedPermissions.map(name => ({ name: `${bridgePrefix}${name}`, kind: 'other', decision: 'allow_once' })));
+        console.log(`${permissionMode}/${mode}: ${names.length} declarations, ${requests.length} model requests; ACP other → allow_once: ${expectedPermissions.join(', ')}`);
+        assert.ok(['tool_call', 'tool_catalog', 'subagent', 'ask_user_question'].every(name => names.includes(name)));
+        assert.equal(names.includes('image_generate'), permitImage);
         if (mode === 'direct') assert.match(JSON.stringify(requests.at(-1).functions), /direct ACP/);
         if (mode === 'fallback') {
           assert.match(JSON.stringify(requests.at(-1).functions), /accessibility snapshot/);
@@ -176,12 +193,14 @@ try {
       return session.id;
     } finally { toolSet?.dispose(); await session?.close(); await bridge.close(); bridge = undefined; }
   }
-  const id = await turns(undefined, ['direct', 'fallback']);
-  permitBrowser = permitImage = false;
-  await turns(id, ['reloaded']);
-  assert.equal(unexpectedApprovals, 0, 'full mode requires no probe-specific permission grant');
-  assert.deepEqual(executed, [['image_generate', 'direct ACP'], [browser, 'from ACP']]);
-  console.log('Official ACP confirmed direct and on-demand DSH execution, same-session reuse, and refreshed discovery after session/load.');
+  for (const mode of ['read-only', 'workspace-write']) {
+    permitBrowser = permitImage = true;
+    const id = await turns(mode, undefined, ['direct', 'fallback']);
+    permitBrowser = permitImage = false;
+    await turns(mode, id, ['reloaded']);
+  }
+  assert.deepEqual(executed, Array.from({ length: 2 }, () => [['image_generate', 'direct ACP'], [browser, 'from ACP']]).flat());
+  console.log('Official ACP and production permission handling confirmed direct and on-demand native DSH execution in both restricted modes, including session/load.');
 } finally {
   controller.abort();
   await runtime?.dispose();

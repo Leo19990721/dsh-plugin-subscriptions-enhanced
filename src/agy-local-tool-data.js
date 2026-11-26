@@ -57,12 +57,17 @@ function agyDiffLines(value) {
   return value.endsWith('\n') ? count - 1 : count;
 }
 
-export function summarizeAgyTool(update) {
+export function summarizeAgyTool(update, bridgeName) {
   if (!record(update) || typeof update.toolCallId !== 'string' || !update.toolCallId
     || update.toolCallId.length > 512 || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(update.toolCallId)) return;
-  let title = agyToolText(update.title, 540);
+  // Keep the per-connection wire namespace out of conversation records.
+  const prefix = bridgeName ? `mcp_${bridgeName}_` : 'mcp_dsh_';
+  const stableAlias = (value, start = 0) => typeof value === 'string' && value.startsWith(prefix, start)
+    ? `${value.slice(0, start)}mcp_dsh_${value.slice(start + prefix.length, start + prefix.length + 540)}` : value;
+  const wireTitle = update.title;
+  let title = agyToolText(stableAlias(wireTitle, typeof wireTitle === 'string' && wireTitle.startsWith('Run ') ? 4 : 0), 540);
   const raw = record(update.rawInput) ? update.rawInput : {};
-  const outer = agyToolText(update.name ?? update.toolName, 104);
+  const outer = agyToolText(stableAlias(update.name ?? update.toolName), 104);
   let name = field(raw, ['toolName', 'tool', 'name'], 104) || outer;
   // Agy's on-demand invocation wraps the original name in rawInput. Only
   // project the validated identifier, never the serialized arguments.

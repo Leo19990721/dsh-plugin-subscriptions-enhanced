@@ -2,7 +2,7 @@ import { summarizeAgyTool } from './agy-local-tool-data.js';
 
 const cancelled = Object.freeze({ outcome: Object.freeze({ outcome: 'cancelled' }) });
 const ended = status => ['completed', 'failed', 'cancelled'].includes(status);
-export function backgroundEvent(update) {
+export function backgroundEvent(update, bridgeName) {
   switch (update?.sessionUpdate) {
     case 'agent_message_chunk': case 'agent_thought_chunk':
       if (update.content?.type === 'text' && typeof update.content.text === 'string' && update.content.text) {
@@ -10,7 +10,7 @@ export function backgroundEvent(update) {
       }
       break;
     case 'tool_call': case 'tool_call_update': {
-      const value = summarizeAgyTool(update);
+      const value = summarizeAgyTool(update, bridgeName);
       if (value) return { kind: 'tool', summarized: true, value: { ...value, sessionUpdate: update.sessionUpdate } };
       break;
     }

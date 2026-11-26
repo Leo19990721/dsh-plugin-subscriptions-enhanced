@@ -327,6 +327,7 @@ test('the shipped Client merges Google Antigravity into the single native Models
   assert.equal(copy.en.openQuota, 'Check quota');
   assert.equal(copy.zh.refreshQuota, '刷新额度');
   assert.equal(copy.en.refreshQuota, 'Refresh quota');
+  for (const dictionary of [copy.zh, copy.en]) assert.equal(Object.hasOwn(dictionary, 'permissionHint'), false);
 });
 
 test('Google Antigravity appears in outer connected list when ready and inside Add card when not ready', async () => {
@@ -363,6 +364,7 @@ test('Google Antigravity appears in outer connected list when ready and inside A
   const expandedRow = nodes(view).find(n => n.props?.['data-subscription-provider'] === 'antigravity');
   const body = nodes(expandedRow).find(n => n.props?.className === 'dsh-enhanced-subscription-body');
   assert.ok(body);
+  assert.equal(nodes(body).some(n => n.type === 'p' && (!n.props?.role || n.children.includes('permissionHint'))), false);
   assert.ok(nodes(body).some(n => n.type === 'button' && n.children.includes('retry')));
   const logoutBtn = nodes(body).find(n => n.type === 'button' && n.children.includes('logout'));
   assert.ok(logoutBtn, 'connected Google Antigravity exposes official Logout button');

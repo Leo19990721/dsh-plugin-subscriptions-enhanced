@@ -81,7 +81,7 @@ function executionPolicy(agent, ctx) {
     ?? ctx.get('workingDirectory'))?.get(agent.session) ?? agent.session.header.cwd ?? sandbox?.workspaceRoot };
 }
 
-async function permission(ctx, agent, params, signal, readOnlyRefs) {
+export async function agyLocalPermission(ctx, agent, params, signal, readOnlyRefs, bridge) {
   const policy = executionPolicy(agent, ctx);
   const { toolCall, options } = params;
   if (signal.aborted || !Array.isArray(options) || !options.length || options.length > 16) return cancelledPermission;
@@ -101,6 +101,11 @@ async function permission(ctx, agent, params, signal, readOnlyRefs) {
       && JSON.stringify(current.additionalWritableRoots) === JSON.stringify(policy.additionalWritableRoots);
   };
   const restricted = policy.mode === 'read-only' || policy.mode === 'workspace-write';
+  // This one-shot ACP grant only reaches our loopback bridge. The DSH
+  // pipeline remains responsible for the actual native tool's permissions.
+  if (restricted && toolCall.kind === 'other') {
+    return selected(samePolicy() && bridge?.permitsAcpTool(toolCall) ? allow ?? deny : deny);
+  }
   let permittedPaths = async () => true;
   if (restricted && toolCall.kind !== 'fetch') {
     // ACP locations use the class of the operation as well as path(s). Never
@@ -560,7 +565,7 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
           }
           if (current()) {
             const control = AbortSignal.any([acpSignal, syncing.signal]);
-            syncing.attach(params => current() ? permission(ctx, agent, params, control, chat.refs) : cancelledPermission);
+            syncing.attach(params => current() ? agyLocalPermission(ctx, agent, params, control, chat.refs, chat.bridge) : cancelledPermission);
           }
           while (!syncing.sealed || syncing.chunks.length) {
             signal.throwIfAborted();
@@ -641,18 +646,20 @@ export function mountLocalGoogle(ctx, config = {}, runtime = createLocalAgy(conf
             const open = officialId => {
               const epoch = chat.epoch = { approvals: 0 };
               previousCards = chat.toolCards = new Map();
+              const bridge = chat.bridge;
               return runtime.open(turnSignal, { id, cwd, mode, officialId, persona,
                 onBackgroundUpdate(update) {
-                  const event = backgroundEvent(update);
+                  const event = backgroundEvent(update, bridge?.servers[0].name);
                   if (event) ensureBackgroundWave(chat, epoch, event);
                 },
                 onBackgroundPermission: params => ensureBackgroundWave(chat, epoch)?.permission(params) ?? cancelledPermission,
                 onDisconnect() { if (chat.epoch === epoch) { chat.armed = false; chat.bg?.finish(); } },
                 nativeSubagents: tools.has('subagent'), nativeQuestions: tools.has('ask_user_question'),
-                nativeSchedules, mcpServers: chat.bridge?.servers,
+                nativeSchedules, mcpServers: bridge?.servers,
                 async onPermission(params, control) {
+                  if (chat.epoch !== epoch) return cancelledPermission;
                   epoch.approvals++; chat.permissionActivity?.();
-                  try { return await permission(ctx, agent, params, control, chat.readOnlyRefs ?? []); }
+                  try { return await agyLocalPermission(ctx, agent, params, control, chat.readOnlyRefs ?? [], bridge); }
                   finally {
                     epoch.approvals--;
                     if (chat.epoch === epoch) { chat.bg?.permissionCount(epoch.approvals); chat.permissionActivity?.(); }

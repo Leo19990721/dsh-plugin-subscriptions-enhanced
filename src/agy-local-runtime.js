@@ -61,7 +61,6 @@ const settingsFor = (mode, hostFileReview = false) => {
     // commands remain denied; the DSH loopback bridge has its own tool policy.
     ...(restricted ? { permissions: {
       deny: ['command(*)', 'unsandboxed(*)', 'execute_url(*)', ...(mode === 'read-only' ? ['write_file(*)'] : [])],
-      allow: ['mcp(dsh/*)'],
       ...(ask.length ? { ask } : {}),
     } } : {}),
   };
@@ -240,17 +239,20 @@ export function createLocalAgy({ executable, proxy, dataDir, agentsFile } = {}, 
     await Promise.all([...Object.values(areas), settingsDir, ...(!catalog ? [configDir] : []), ...(useIsolatedWork ? [isolatedWork] : [])].map(dir => mkdir(dir, { recursive: true })));
     const [cwd, proxySnapshot] = await Promise.all([actualDirectory(useIsolatedWork ? isolatedWork : requestedCwd), resolveProxySnapshot(signal)]);
     const workspace = useIsolatedWork ? undefined : await materializeWorkspace(settingsDir, contextCwd(requestedCwd, cwd), signal);
-    const bridgeQuestions = !useIsolatedWork && mcpServers.length > 0 && nativeQuestions;
+    const bridgeName = !useIsolatedWork && mcpServers[0]?.name;
+    const bridgeQuestions = Boolean(bridgeName && nativeQuestions);
+    const bridgeGuidance = text => text.replaceAll('mcp_dsh_', `mcp_${bridgeName}_`);
     await Promise.all([
       writeFile(join(settingsDir, 'settings.json'), JSON.stringify(settingsFor(ephemeral ? 'read-only' : mode, !useIsolatedWork && typeof onPermission === 'function'))),
       writeFile(join(geminiDir, 'GEMINI.md'), [...(workspace?.rules ?? []), !useIsolatedWork && persona,
-        !useIsolatedWork && mcpServers.length > 0 && DSH_MCP_GUIDANCE,
-        !useIsolatedWork && nativeSubagents && NATIVE_SUBAGENT_GUIDANCE, bridgeQuestions && DSH_QUESTION_GUIDANCE,
+        bridgeName && bridgeGuidance(DSH_MCP_GUIDANCE),
+        bridgeName && nativeSubagents && bridgeGuidance(NATIVE_SUBAGENT_GUIDANCE),
+        bridgeQuestions && bridgeGuidance(DSH_QUESTION_GUIDANCE),
         !useIsolatedWork && nativeSchedules && DSH_SCHEDULE_GUIDANCE].filter(Boolean).join('\n\n')),
       ...(!catalog ? [
-        writeFile(join(configDir, DSH_DENY_SUBAGENT_FILE), JSON.stringify(denyPayloadFor(!ephemeral && Boolean(nativeSubagents)))),
+        writeFile(join(configDir, DSH_DENY_SUBAGENT_FILE), JSON.stringify({ decision: 'deny', reason: bridgeGuidance(denyPayloadFor(Boolean(bridgeName && nativeSubagents)).reason) })),
         writeFile(join(configDir, 'hooks.json'), JSON.stringify(hooksFor(bridgeQuestions))),
-        ...(bridgeQuestions ? [writeFile(join(configDir, DSH_DENY_QUESTION_FILE), JSON.stringify(denyQuestion))] : []),
+        ...(bridgeQuestions ? [writeFile(join(configDir, DSH_DENY_QUESTION_FILE), JSON.stringify({ ...denyQuestion, reason: bridgeGuidance(denyQuestion.reason) }))] : []),
       ] : []),
     ]);
     const env = childEnv(areas, proxySnapshot.env);

@@ -334,16 +334,15 @@ test('real cwd, stable home and official ID survive CLI upgrade and policy chang
   assert.equal(spawns[1].permissionMode, 'sandbox');
   assert.equal(await rules(), '## Global instructions (AGENTS.md)\n\n# Synthetic local rules', 'ordinary mode removes persona while preserving global rules');
   const deny = ['command(*)', 'unsandboxed(*)', 'execute_url(*)'];
-  const allow = ['mcp(dsh/*)'];
   assert.deepEqual(await settings(), { useG1Credits: false, agentMode: '', toolPermission: 'request-review',
-    allowNonWorkspaceAccess: false, enableTerminalSandbox: true, permissions: { deny: [...deny, 'write_file(*)'], allow } });
+    allowNonWorkspaceAccess: false, enableTerminalSandbox: true, permissions: { deny: [...deny, 'write_file(*)'] } });
   assert.deepEqual(calls, [{ method: 'session/new', params: { cwd: root, mcpServers: [] } },
     { method: 'session/load', params: { cwd: root, mcpServers: [], sessionId: officialId } }]);
   await reopened.close();
   await runtime.open(signal, { id, cwd: root, mode: 'workspace-write', officialId });
   assert.equal(spawns[2].permissionMode, 'sandbox');
   assert.deepEqual(await settings(), { useG1Credits: false, agentMode: '', toolPermission: 'request-review',
-    allowNonWorkspaceAccess: false, enableTerminalSandbox: true, permissions: { deny, allow, ask: ['write_file(*)'] } });
+    allowNonWorkspaceAccess: false, enableTerminalSandbox: true, permissions: { deny, ask: ['write_file(*)'] } });
   await runtime.dispose();
   runtime = createLocalAgy({ dataDir, agentsFile }, dependencies);
   for (const mode of ['read-only', 'workspace-write']) {
@@ -351,7 +350,7 @@ test('real cwd, stable home and official ID survive CLI upgrade and policy chang
     assert.equal(spawns.at(-1).permissionMode, 'sandbox');
     assert.deepEqual(await settings(), { useG1Credits: false, agentMode: '', toolPermission: 'request-review',
       allowNonWorkspaceAccess: true, enableTerminalSandbox: true, permissions: { deny: mode === 'read-only' ? [...deny, 'write_file(*)'] : deny,
-        allow, ask: mode === 'read-only' ? ['read_file(*)'] : ['read_file(*)', 'write_file(*)'] } });
+        ask: mode === 'read-only' ? ['read_file(*)'] : ['read_file(*)', 'write_file(*)'] } });
     await chat.close();
   }
   await runtime.dispose();
@@ -722,8 +721,9 @@ test('non-catalog sessions block AGY built-in async subagent tools via PreToolUs
   await assert.rejects(lstat(join(spawns[0].env.HOME, '.gemini', 'config', 'hooks.json')), { code: 'ENOENT' });
   await catalog.close();
 
+  const mcpServers = [{ type: 'http', name: 'dsh0123456789abcdef01234567', url: 'http://127.0.0.1:12345/mcp', headers: [] }];
   // Chat session with nativeSubagents: true
-  const s1 = await runtime.open(signal, { id: 'chat-sub', cwd, mode: 'full', nativeSubagents: true });
+  const s1 = await runtime.open(signal, { id: 'chat-sub', cwd, mode: 'full', mcpServers, nativeSubagents: true });
   const cfg1 = join(spawns[1].env.HOME, '.gemini', 'config');
   const hooks = JSON.parse(await readFile(join(cfg1, 'hooks.json'), 'utf8'));
   const deny1 = JSON.parse(await readFile(join(cfg1, 'dsh-deny-subagent.json'), 'utf8'));
@@ -732,12 +732,12 @@ test('non-catalog sessions block AGY built-in async subagent tools via PreToolUs
   for (const blocked of ['invoke_subagent', 'define_subagent', 'manage_subagents', 'send_message', 'swarm', 'run_workflow', 'schedule']) {
     assert.equal(matcher.test(blocked), true, `should block ${blocked}`);
   }
-  for (const allowed of ['mcp_dsh_subagent', 'mcp_dsh_send_message', 'mcp_dsh_list_agents', 'mcp_dsh_wait_agent', 'read_file', 'run_command']) {
+  for (const allowed of ['mcp_dsh0123456789abcdef01234567_subagent', 'mcp_dsh0123456789abcdef01234567_send_message', 'mcp_dsh0123456789abcdef01234567_list_agents', 'mcp_dsh0123456789abcdef01234567_wait_agent', 'read_file', 'run_command']) {
     assert.equal(matcher.test(allowed), false, `should allow ${allowed}`);
   }
   assert.equal(deny1.decision, 'deny');
-  assert.match(deny1.reason, /mcp_dsh_subagent/);
-  assert.match(geminiMd1, /mcp_dsh_subagent/);
+  assert.match(deny1.reason, /mcp_dsh0123456789abcdef01234567_subagent/);
+  assert.match(geminiMd1, /mcp_dsh0123456789abcdef01234567_subagent/);
   await s1.close();
 
   // Chat session with nativeSubagents: false
@@ -746,8 +746,8 @@ test('non-catalog sessions block AGY built-in async subagent tools via PreToolUs
   const deny2 = JSON.parse(await readFile(join(cfg2, 'dsh-deny-subagent.json'), 'utf8'));
   const geminiMd2 = await readFile(join(spawns[2].env.HOME, '.gemini', 'GEMINI.md'), 'utf8');
   assert.equal(deny2.decision, 'deny');
-  assert.doesNotMatch(deny2.reason, /mcp_dsh_subagent/);
-  assert.doesNotMatch(geminiMd2, /mcp_dsh_subagent/);
+  assert.doesNotMatch(deny2.reason, /mcp_dsh0123456789abcdef01234567_subagent/);
+  assert.doesNotMatch(geminiMd2, /mcp_dsh0123456789abcdef01234567_subagent/);
   await s2.close();
 
   // Ephemeral auxiliary session uses a unique isolated dir (not catalog), writes hooks, and deletes itself on close
@@ -764,22 +764,21 @@ test('non-catalog sessions block AGY built-in async subagent tools via PreToolUs
   await assert.rejects(lstat(join(homeAux1, '..')), { code: 'ENOENT' });
   await assert.rejects(lstat(join(homeAux2, '..')), { code: 'ENOENT' });
 
-  const mcpServers = [{ type: 'http', name: 'dsh', url: 'http://127.0.0.1:12345/mcp', headers: [] }];
   const bridged = await runtime.open(signal, { id: 'chat-sub', cwd, mode: 'full', mcpServers, nativeQuestions: true, nativeSchedules: true });
   const questionHook = JSON.parse(await readFile(join(cfg1, 'hooks.json'), 'utf8'))['dsh-native-questions-only'].PreToolUse[0];
   const intercept = new RegExp(questionHook.matcher);
   assert.ok(intercept.test('ask_question'));
-  for (const name of ['ask_user_question', 'mcp_dsh_ask_user_question', 'ask_question_again']) assert.ok(!intercept.test(name));
+  for (const name of ['ask_user_question', 'mcp_dsh0123456789abcdef01234567_ask_user_question', 'ask_question_again']) assert.ok(!intercept.test(name));
   const denyQuestion = JSON.parse(await readFile(join(cfg1, 'dsh-deny-ask-question.json'), 'utf8'));
   assert.equal(denyQuestion.decision, 'deny');
-  assert.match(denyQuestion.reason, /mcp_dsh_ask_user_question/);
+  assert.match(denyQuestion.reason, /mcp_dsh0123456789abcdef01234567_ask_user_question/);
   const instructions = await readFile(join(spawns.at(-1).env.HOME, '.gemini', 'GEMINI.md'), 'utf8');
-  assert.match(instructions, /mcp_dsh_ask_user_question.*multi_select/);
+  assert.match(instructions, /mcp_dsh0123456789abcdef01234567_ask_user_question.*multi_select/);
   assert.match(instructions, /explicit request/);
   await bridged.close();
   const unbridged = await runtime.open(signal, { id: 'chat-sub', cwd, mode: 'full', nativeQuestions: true });
   assert.equal(JSON.parse(await readFile(join(cfg1, 'hooks.json'), 'utf8'))['dsh-native-questions-only'], undefined);
-  assert.doesNotMatch(await readFile(join(spawns.at(-1).env.HOME, '.gemini', 'GEMINI.md'), 'utf8'), /mcp_dsh_ask_user_question/);
+  assert.doesNotMatch(await readFile(join(spawns.at(-1).env.HOME, '.gemini', 'GEMINI.md'), 'utf8'), /mcp_dsh0123456789abcdef01234567_ask_user_question/);
   await unbridged.close();
 });
 
